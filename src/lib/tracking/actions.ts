@@ -165,6 +165,134 @@ export async function unmarkEpisodeAction(args: {
   return { ok: true };
 }
 
+// ─── Bulk season actions ───────────────────────────────────────────────────
+
+/**
+ * Mark every episode in a season as watched. Skips episodes the user already
+ * has (idempotent) and moves show_progress to the last episode of the season.
+ * Big UX win for retroactively logging a whole binged season.
+ */
+export async function markSeasonWatchedAction(args: {
+  mediaId: string;
+  seasonNumber: number;
+}): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  // Fetch all episodes for this season via the seasons join.
+  const { data: episodes, error: epError } = await supabase
+    .from("episodes")
+    .select(
+      `id, episode_number, runtime_minutes,
+       seasons!inner ( season_number, media_id )`,
+    )
+    .eq("seasons.media_id", args.mediaId)
+    .eq("seasons.season_number", args.seasonNumber);
+
+  if (epError) return { error: epError.message };
+  if (!episodes || episodes.length === 0) return { error: "no-episodes" };
+
+  const episodeIds = episodes.map((e) => e.id as string);
+
+  // Which ones does the user already have?
+  const { data: alreadyWatched } = await supabase
+    .from("watched_entries")
+    .select("episode_id")
+    .eq("user_id", user.id)
+    .in("episode_id", episodeIds);
+  const watchedSet = new Set(
+    (alreadyWatched ?? []).map((w) => w.episode_id as string),
+  );
+
+  const toInsert = episodes
+    .filter((e) => !watchedSet.has(e.id as string))
+    .map((e) => ({
+      user_id: user.id,
+      media_id: args.mediaId,
+      episode_id: e.id as string,
+      runtime_minutes: (e.runtime_minutes as number | null) ?? null,
+    }));
+
+  if (toInsert.length > 0) {
+    const { error } = await supabase.from("watched_entries").insert(toInsert);
+    if (error) return { error: error.message };
+  }
+
+  // Move progress to the last episode of this season.
+  const lastEp = [...episodes].sort(
+    (a, b) => (b.episode_number as number) - (a.episode_number as number),
+  )[0];
+
+  const { data: currentProgress } = await supabase
+    .from("show_progress")
+    .select("status")
+    .eq("user_id", user.id)
+    .eq("media_id", args.mediaId)
+    .maybeSingle();
+  const status =
+    currentProgress?.status === "completed" ? "completed" : "watching";
+
+  const { error: progressError } = await supabase.from("show_progress").upsert(
+    {
+      user_id: user.id,
+      media_id: args.mediaId,
+      current_season: args.seasonNumber,
+      current_episode: lastEp.episode_number as number,
+      last_watched_episode: lastEp.id as string,
+      status,
+      status_changed_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,media_id" },
+  );
+
+  if (progressError) return { error: progressError.message };
+
+  revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/home");
+  return { ok: true };
+}
+
+/**
+ * Delete all watched_entries for episodes in a season. Leaves show_progress
+ * alone (user can manually move the resume point if they want).
+ */
+export async function unmarkSeasonWatchedAction(args: {
+  mediaId: string;
+  seasonNumber: number;
+}): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const { data: episodes, error: epError } = await supabase
+    .from("episodes")
+    .select(`id, seasons!inner ( season_number, media_id )`)
+    .eq("seasons.media_id", args.mediaId)
+    .eq("seasons.season_number", args.seasonNumber);
+
+  if (epError) return { error: epError.message };
+  if (!episodes || episodes.length === 0) return { ok: true };
+
+  const episodeIds = episodes.map((e) => e.id as string);
+
+  const { error } = await supabase
+    .from("watched_entries")
+    .delete()
+    .eq("user_id", user.id)
+    .in("episode_id", episodeIds);
+
+  if (error) return { error: error.message };
+
+  revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/home");
+  return { ok: true };
+}
+
 // ─── Show status ───────────────────────────────────────────────────────────
 
 export type ShowStatus = "watching" | "paused" | "completed" | "dropped";

@@ -3,6 +3,7 @@ import type { ShowProgress } from "@/lib/tracking/actions";
 import type { EpisodeRow as EpisodeRowType } from "@/lib/tmdb/seasons";
 import type { TmdbTvSeasonSummary } from "@/lib/tmdb/client";
 import { EpisodeRow } from "./EpisodeRow";
+import { SeasonMarkAllButton } from "./SeasonMarkAllButton";
 import { StatusPicker } from "./StatusPicker";
 
 type Props = {
@@ -127,9 +128,21 @@ export function EpisodeProgressWidget({
           padding: 8,
         }}
       >
-        <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta px-3 pt-2 pb-1">
-          Season {currentSeasonNumber} · {currentSeasonEpisodes.length} episodes
-        </p>
+        <div className="flex items-center justify-between gap-3 px-3 pt-2 pb-1 flex-wrap">
+          <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
+            Season {currentSeasonNumber} · {currentSeasonEpisodes.length} episodes
+          </p>
+          <SeasonMarkAllButton
+            mediaId={mediaId}
+            seasonNumber={currentSeasonNumber}
+            totalInSeason={currentSeasonEpisodes.length}
+            watchedInSeason={
+              currentSeasonEpisodes.filter((ep) =>
+                watchedEpisodeIds.has(ep.id),
+              ).length
+            }
+          />
+        </div>
         {currentSeasonEpisodes.map((ep) => (
           <EpisodeRow
             key={ep.id}

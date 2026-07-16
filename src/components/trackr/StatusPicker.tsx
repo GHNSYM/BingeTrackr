@@ -1,12 +1,23 @@
 "use client";
 
+import { Check, ChevronDown } from "lucide-react";
 import { useState, useTransition } from "react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   setShowStatusAction,
   type ShowStatus,
 } from "@/lib/tracking/actions";
 
-const OPTIONS: { key: ShowStatus; label: string; cssVar: string }[] = [
+const OPTIONS: {
+  key: ShowStatus;
+  label: string;
+  cssVar: string;
+}[] = [
   { key: "watching", label: "Watching", cssVar: "var(--status-watching)" },
   { key: "paused", label: "Paused", cssVar: "var(--status-paused)" },
   { key: "completed", label: "Completed", cssVar: "var(--status-completed)" },
@@ -18,59 +29,73 @@ type Props = {
   initialStatus: ShowStatus | null;
 };
 
-/**
- * Native <select> — simple, accessible, and mobile-native pickers on iOS/Android.
- * Fancy custom popover can come later when we need per-status color chips
- * inside the dropdown itself.
- */
 export function StatusPicker({ mediaId, initialStatus }: Props) {
-  const [status, setStatus] = useState<ShowStatus | "">(initialStatus ?? "");
+  const [status, setStatus] = useState<ShowStatus | null>(initialStatus);
   const [pending, startTransition] = useTransition();
 
   const change = (next: ShowStatus) => {
+    if (next === status) return;
     setStatus(next);
     startTransition(async () => {
       await setShowStatusAction({ mediaId, status: next });
     });
   };
 
-  const activeColor = OPTIONS.find((o) => o.key === status)?.cssVar;
+  const current = OPTIONS.find((o) => o.key === status);
 
   return (
-    <div className="relative">
-      <select
-        value={status}
-        onChange={(e) => change(e.target.value as ShowStatus)}
+    <DropdownMenu>
+      <DropdownMenuTrigger
         disabled={pending}
-        className="appearance-none pl-6 pr-8 py-1.5 text-sm font-semibold rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring hover:brightness-110 transition disabled:opacity-70"
         style={{
           background: "var(--secondary)",
           color: "var(--foreground)",
+          border: "1px solid var(--border)",
         }}
       >
-        <option value="" disabled>
-          Set status
-        </option>
-        {OPTIONS.map((o) => (
-          <option key={o.key} value={o.key}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      {activeColor && (
         <span
           aria-hidden
-          className="absolute left-2.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none"
-          style={{ background: activeColor }}
+          className="w-2 h-2 rounded-full"
+          style={{ background: current?.cssVar ?? "var(--meta)" }}
         />
-      )}
-      <span
-        aria-hidden
-        className="absolute right-3 top-1/2 -translate-y-1/2 text-xs pointer-events-none"
-        style={{ color: "var(--meta)" }}
+        <span>{current?.label ?? "Set status"}</span>
+        <ChevronDown
+          size={14}
+          aria-hidden
+          style={{ color: "var(--meta)" }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="min-w-[168px] p-1"
       >
-        ▾
-      </span>
-    </div>
+        {OPTIONS.map((o) => {
+          const isActive = o.key === status;
+          return (
+            <DropdownMenuItem
+              key={o.key}
+              onClick={() => change(o.key)}
+              className="flex items-center gap-2.5 py-2 px-2 rounded-md cursor-pointer text-sm"
+            >
+              <span
+                aria-hidden
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ background: o.cssVar }}
+              />
+              <span className="flex-1">{o.label}</span>
+              {isActive && (
+                <Check
+                  size={14}
+                  aria-hidden
+                  style={{ color: "var(--foreground)" }}
+                />
+              )}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
