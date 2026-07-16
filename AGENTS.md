@@ -64,15 +64,22 @@ src/
 └── middleware.ts          refreshes Supabase auth session per request — do NOT remove
 ```
 
-## Data conventions (from system design)
+## Data conventions
 
-- **Single `watched_entries` table** with nullable `episode_id`. Movie watch = `episode_id IS NULL`. Denormalize `runtime_minutes` onto the row so hours-watched stats are a single `SUM`.
-- **Separate `show_progress` table**, one row per (user, show). Don't derive resume-point from `MAX(watched_at)` — users need explicit control.
-- **Internal `media.id`** (uuid) with `media_external_ids` mapping to TMDB / AniList / IMDb / MAL. Never use TMDB IDs directly — anime reconciliation depends on this indirection.
-- **Cache TMDB lazily** — only mirror media the user touches. Do NOT bulk-import TMDB's catalog (violates ToS + kills the free tier).
-- **RLS policies** use `is_public` on `profiles` (partial index) for cross-user reads. Writes are always `user_id = auth.uid()`.
+The full schema lives in `supabase/migrations/` — read those files as source of truth, not this summary. Key invariants:
 
-Full schema + reasoning lives in the conversation that produced this project. Ask the user for it if you need to defend a decision.
+- **Single `watched_entries` table** with nullable `episode_id`. Movie watch = `episode_id IS NULL`. `runtime_minutes` is denormalized onto the row so hours-watched stats are a single `SUM` with no joins.
+- **Separate `show_progress` table**, one row per (user, show). Don't derive resume-point from `MAX(watched_at)` — users need explicit control (they jump around, mark random eps).
+- **Internal `media.id`** (uuid) with `media_external_ids` mapping to TMDB / AniList / IMDb / MAL. Never use TMDB IDs as primary keys — anime reconciliation depends on this indirection.
+- **Cache TMDB lazily** — only insert `media` rows for titles users have touched. Do NOT bulk-import TMDB's catalog (violates ToS + kills the free tier).
+- **RLS pattern:** owner always reads/writes own; user-content tables (watched, show_progress, ratings, tiers, public custom_lists) are readable by anyone if the user's profile `is_public`. **Watchlist is owner-only-read even on public profiles** — deliberate privacy call.
+- **Auto-profile trigger** on `auth.users` insert creates a `profiles` row with a placeholder `username` (e.g. `useraf12b8c9`). Onboarding lets the user claim a real handle.
+
+## Migrations
+
+See `supabase/README.md` for apply instructions. First migration goes via the SQL editor for speed; second onwards should go through the Supabase CLI so schema stays version-controlled.
+
+Never edit an applied migration file — write a new one that reverses/extends it.
 
 ## Working style
 
