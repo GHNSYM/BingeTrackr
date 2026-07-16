@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { signOutAction } from "@/lib/auth/actions";
 import { requireOnboardedUser } from "@/lib/auth/require-user";
@@ -40,11 +41,16 @@ export default async function HomePage() {
           </p>
         </div>
 
-        <form action={signOutAction}>
-          <Button type="submit" variant="outline" className="w-full sm:w-auto">
-            Log out
+        <div className="flex flex-wrap gap-3">
+          <Button asChild>
+            <Link href="/discover">Discover</Link>
           </Button>
-        </form>
+          <form action={signOutAction}>
+            <Button type="submit" variant="outline">
+              Log out
+            </Button>
+          </form>
+        </div>
       </div>
     </main>
   );
