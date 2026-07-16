@@ -42,6 +42,15 @@ export type TmdbMovieDetails = {
   original_language: string;
 };
 
+export type TmdbTvSeasonSummary = {
+  id: number;
+  season_number: number;
+  name: string;
+  episode_count: number;
+  air_date: string | null;
+  poster_path: string | null;
+};
+
 export type TmdbTvDetails = {
   id: number;
   name: string;
@@ -56,6 +65,7 @@ export type TmdbTvDetails = {
   genres: { id: number; name: string }[];
   vote_average: number;
   original_language: string;
+  seasons: TmdbTvSeasonSummary[];
 };
 
 export type TmdbWatchProviders = {
@@ -167,6 +177,33 @@ export function getWatchProviders(
     `/${type}/${tmdbId}/watch/providers`,
     undefined,
     { revalidateSeconds: 60 * 60 * 24 * 7 }, // 7d
+  );
+}
+
+export type TmdbSeasonDetails = {
+  id: number;
+  season_number: number;
+  name: string;
+  air_date: string | null;
+  episodes: TmdbEpisode[];
+};
+
+export type TmdbEpisode = {
+  id: number;
+  episode_number: number;
+  season_number: number;
+  name: string;
+  overview: string;
+  air_date: string | null;
+  runtime: number | null;
+  still_path: string | null;
+};
+
+export function getSeason(tvId: number | string, seasonNumber: number) {
+  return tmdb<TmdbSeasonDetails>(
+    `/tv/${tvId}/season/${seasonNumber}`,
+    undefined,
+    { revalidateSeconds: 60 * 60 * 24 }, // 24h
   );
 }
 

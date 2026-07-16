@@ -2,6 +2,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { EpisodeProgressWidget } from "@/components/trackr/EpisodeProgressWidget";
+import { MarkWatchedButton } from "@/components/trackr/MarkWatchedButton";
+import { createClient } from "@/lib/supabase/server";
 import {
   backdropUrl,
   getMovie,
@@ -11,21 +14,27 @@ import {
   type TmdbMovieDetails,
   type TmdbTvDetails,
 } from "@/lib/tmdb/client";
+import {
+  ensureSeasonCached,
+  getUserWatchedEpisodeIds,
+} from "@/lib/tmdb/seasons";
 import { upsertMovie, upsertTv } from "@/lib/tmdb/upsert";
-import { createClient } from "@/lib/supabase/server";
+import {
+  getShowProgress,
+  isMovieWatched,
+} from "@/lib/tracking/actions";
 
 type PageParams = Promise<{ type: string; id: string }>;
-type MetadataArgs = { params: PageParams };
+type SearchParams = Promise<{ s?: string }>;
 
 // ─── Metadata (for OG previews when shared) ────────────────────────────────
 
-export async function generateMetadata({ params }: MetadataArgs) {
+export async function generateMetadata({ params }: { params: PageParams }) {
   const { type, id } = await params;
   if (type !== "movie" && type !== "tv") return {};
 
   try {
-    const data =
-      type === "movie" ? await getMovie(id) : await getTv(id);
+    const data = type === "movie" ? await getMovie(id) : await getTv(id);
     const title = "title" in data ? data.title : data.name;
     return {
       title: `${title} — BingeTrackr`,
@@ -47,10 +56,13 @@ export async function generateMetadata({ params }: MetadataArgs) {
 
 export default async function TitleDetailPage({
   params,
+  searchParams,
 }: {
   params: PageParams;
+  searchParams: SearchParams;
 }) {
   const { type, id } = await params;
+  const { s } = await searchParams;
   if (type !== "movie" && type !== "tv") notFound();
 
   // Fetch details + upsert into our catalog.
@@ -70,7 +82,13 @@ export default async function TitleDetailPage({
     notFound();
   }
 
-  // Fetch watch providers for India (best-effort — silently skip on error).
+  // Signed-in? Different CTAs, and we hydrate progress state.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Watch providers for India — best-effort.
   const providers = await getWatchProviders(type, id).catch(() => null);
   const flatrateIN = providers?.results?.["IN"]?.flatrate ?? [];
 
@@ -86,14 +104,48 @@ export default async function TitleDetailPage({
       : details.episode_run_time?.[0] ?? null;
   const rating = Math.round(details.vote_average * 10) / 10;
 
-  // Are they signed in? Different CTAs for signed-in vs anonymous.
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   const backdrop = backdropUrl(details.backdrop_path, "w1280");
   const poster = posterUrl(details.poster_path, "w500");
+
+  // ── TV-only data ─────────────────────────────────────────────────────────
+  let tvData: {
+    currentSeason: number;
+    seasonEpisodes: Awaited<ReturnType<typeof ensureSeasonCached>>;
+    watchedIds: Set<string>;
+    progress: Awaited<ReturnType<typeof getShowProgress>>;
+    totalEpisodes: number;
+  } | null = null;
+
+  if (type === "tv") {
+    const tv = details as TmdbTvDetails;
+    // Pick the season to view: URL param > user's current season > first real season.
+    const progress = user ? await getShowProgress(ourMediaId) : null;
+    const seasonFromParam = s ? parseInt(s, 10) : null;
+    const chosenSeason =
+      seasonFromParam && Number.isFinite(seasonFromParam)
+        ? seasonFromParam
+        : progress?.current_season ?? firstRealSeason(tv);
+
+    const seasonEpisodes = await ensureSeasonCached(
+      ourMediaId,
+      id,
+      chosenSeason,
+    );
+    const watchedIds = user
+      ? await getUserWatchedEpisodeIds(ourMediaId)
+      : new Set<string>();
+
+    tvData = {
+      currentSeason: chosenSeason,
+      seasonEpisodes,
+      watchedIds,
+      progress,
+      totalEpisodes: tv.number_of_episodes ?? 0,
+    };
+  }
+
+  const movieWatched =
+    type === "movie" && user ? await isMovieWatched(ourMediaId) : false;
 
   return (
     <main className="flex-1 flex flex-col">
@@ -126,7 +178,6 @@ export default async function TitleDetailPage({
 
         <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 -mt-40 sm:-mt-32 relative z-10">
           <div className="flex flex-col sm:flex-row gap-6 items-start">
-            {/* Poster */}
             <div
               className="shrink-0 overflow-hidden"
               style={{
@@ -147,17 +198,13 @@ export default async function TitleDetailPage({
               ) : (
                 <div
                   className="w-full h-full grid place-items-center text-6xl font-extrabold"
-                  style={{
-                    background: "var(--bg2)",
-                    color: "var(--meta)",
-                  }}
+                  style={{ background: "var(--bg2)", color: "var(--meta)" }}
                 >
                   {title[0]}
                 </div>
               )}
             </div>
 
-            {/* Title block */}
             <div className="flex flex-col gap-3 pt-2">
               <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
                 {type === "movie" ? "Movie" : "TV Series"}
@@ -177,35 +224,74 @@ export default async function TitleDetailPage({
             </div>
           </div>
 
-          {/* Action row */}
-          <div className="mt-6 flex flex-wrap gap-2">
-            {user ? (
-              <>
-                <Button disabled className="cursor-not-allowed">
-                  Mark watched
-                </Button>
-                <Button variant="outline" disabled className="cursor-not-allowed">
-                  + Watchlist
-                </Button>
-                <Button variant="outline" disabled className="cursor-not-allowed">
-                  Rate
-                </Button>
-                <p className="w-full text-xs text-meta mt-2">
-                  Actions wire up in the next session. Media id cached:{" "}
-                  <code className="text-foreground">{ourMediaId.slice(0, 8)}</code>
-                </p>
-              </>
-            ) : (
-              <>
-                <Button asChild>
-                  <Link href="/signup">Sign up to track</Link>
-                </Button>
-                <Button asChild variant="outline">
-                  <Link href="/login">Log in</Link>
-                </Button>
-              </>
-            )}
-          </div>
+          {/* Action row (movie only — TV actions live in the progress widget) */}
+          {type === "movie" && (
+            <div className="mt-6 flex flex-wrap gap-2">
+              {user ? (
+                <>
+                  <MarkWatchedButton
+                    mediaId={ourMediaId}
+                    initiallyWatched={movieWatched}
+                  />
+                  <Button variant="outline" disabled className="cursor-not-allowed">
+                    + Watchlist
+                  </Button>
+                  <Button variant="outline" disabled className="cursor-not-allowed">
+                    Rate
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button asChild>
+                    <Link href="/signup">Sign up to track</Link>
+                  </Button>
+                  <Button asChild variant="outline">
+                    <Link href="/login">Log in</Link>
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* TV — the founding feature */}
+          {type === "tv" && tvData && (
+            <div className="mt-8">
+              {user ? (
+                <EpisodeProgressWidget
+                  mediaId={ourMediaId}
+                  totalEpisodes={tvData.totalEpisodes}
+                  totalWatched={tvData.watchedIds.size}
+                  progress={tvData.progress}
+                  allSeasons={(details as TmdbTvDetails).seasons}
+                  currentSeasonNumber={tvData.currentSeason}
+                  currentSeasonEpisodes={tvData.seasonEpisodes.episodes}
+                  watchedEpisodeIds={tvData.watchedIds}
+                  tmdbTvId={id}
+                />
+              ) : (
+                <div
+                  className="glass p-6 flex flex-col gap-3"
+                  style={{ borderRadius: "var(--radius-card)" }}
+                >
+                  <p className="text-lg font-semibold">
+                    Sign up to track episodes.
+                  </p>
+                  <p className="text-body text-sm">
+                    Never lose your place again. One-tap Mark Watched, resume from
+                    exactly where you stopped, hours-watched stats.
+                  </p>
+                  <div className="flex gap-2 mt-2">
+                    <Button asChild>
+                      <Link href="/signup">Sign up free</Link>
+                    </Button>
+                    <Button asChild variant="outline">
+                      <Link href="/login">Log in</Link>
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Where to watch (India) */}
           {flatrateIN.length > 0 && (
@@ -250,22 +336,14 @@ export default async function TitleDetailPage({
             </section>
           )}
 
-          {/* TV progress placeholder */}
-          {type === "tv" && (
-            <section className="mt-8 max-w-3xl glass p-5" style={{ borderRadius: "var(--radius-card)" }}>
-              <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-meta mb-2">
-                Episode progress
-              </h2>
-              <p className="text-body text-sm">
-                Season selector, progress bar, and one-tap Mark Watched land next
-                session — this is the founding feature and gets its own build day.
-              </p>
-            </section>
-          )}
-
           <div className="h-16" />
         </div>
       </section>
     </main>
   );
+}
+
+function firstRealSeason(tv: TmdbTvDetails): number {
+  const real = tv.seasons.find((s) => s.season_number > 0);
+  return real?.season_number ?? 1;
 }
