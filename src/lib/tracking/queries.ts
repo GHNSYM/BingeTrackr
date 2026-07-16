@@ -268,6 +268,218 @@ function relativeWhen(iso: string, prefix = "Watched"): string {
   return `${prefix} · ${Math.floor(days / 365)}y ago`;
 }
 
+// ─── Stats ─────────────────────────────────────────────────────────────────
+
+export type Stats = {
+  lifetime: {
+    totalMinutes: number;
+    moviesWatched: number;
+    episodesWatched: number;
+    showsCompleted: number;
+  };
+  thisYear: {
+    year: number;
+    totalMinutes: number;
+    movies: number;
+    episodes: number;
+  };
+  byType: { movie: number; tv: number };
+  topShows: Array<{
+    mediaId: string;
+    title: string;
+    posterPath: string | null;
+    tmdbId: string | null;
+    episodeCount: number;
+    minutes: number;
+  }>;
+  onThisDay: Array<{
+    mediaId: string;
+    title: string;
+    posterPath: string | null;
+    tmdbId: string | null;
+    tmdbType: "movie" | "tv";
+    watchedAt: string;
+    yearsAgo: number;
+    isEpisode: boolean;
+  }>;
+};
+
+/**
+ * Everything the /stats page needs, in as few round-trips as we can
+ * reasonably manage: one big fetch of watched_entries with the media join,
+ * one count for shows-completed, then all aggregation in JS. Fine up to
+ * tens of thousands of watched entries; if a user ever crosses that we
+ * push some of this into a Postgres function.
+ */
+export async function getStats(): Promise<Stats> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const empty: Stats = {
+    lifetime: {
+      totalMinutes: 0,
+      moviesWatched: 0,
+      episodesWatched: 0,
+      showsCompleted: 0,
+    },
+    thisYear: {
+      year: new Date().getFullYear(),
+      totalMinutes: 0,
+      movies: 0,
+      episodes: 0,
+    },
+    byType: { movie: 0, tv: 0 },
+    topShows: [],
+    onThisDay: [],
+  };
+  if (!user) return empty;
+
+  const [entriesRes, completedRes] = await Promise.all([
+    supabase
+      .from("watched_entries")
+      .select(
+        `watched_at, runtime_minutes, media_id, episode_id,
+         media:media_id ( id, title, poster_path, type )`,
+      )
+      .eq("user_id", user.id),
+    supabase
+      .from("show_progress")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "completed"),
+  ]);
+
+  const entries = entriesRes.data ?? [];
+  const showsCompleted = completedRes.count ?? 0;
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+  const currentDate = now.getDate();
+
+  let lifetimeMinutes = 0;
+  let moviesLifetime = 0;
+  let episodesLifetime = 0;
+  let thisYearMinutes = 0;
+  let thisYearMovies = 0;
+  let thisYearEpisodes = 0;
+  const byType = { movie: 0, tv: 0 };
+
+  const showAgg = new Map<
+    string,
+    {
+      title: string;
+      posterPath: string | null;
+      epCount: number;
+      minutes: number;
+    }
+  >();
+
+  type OnThisDayRow = {
+    mediaId: string;
+    title: string;
+    posterPath: string | null;
+    tmdbType: "movie" | "tv";
+    watchedAt: string;
+    yearsAgo: number;
+    isEpisode: boolean;
+  };
+  const onThisDay: OnThisDayRow[] = [];
+
+  for (const e of entries) {
+    const runtime = (e.runtime_minutes as number | null) ?? 0;
+    const isEpisode = e.episode_id !== null;
+    const media = e.media as {
+      title: string;
+      poster_path: string | null;
+      type: "movie" | "tv";
+    } | null;
+    if (!media) continue;
+
+    lifetimeMinutes += runtime;
+    if (isEpisode) episodesLifetime++;
+    else moviesLifetime++;
+
+    const watched = new Date(e.watched_at as string);
+    if (watched.getFullYear() === currentYear) {
+      thisYearMinutes += runtime;
+      if (isEpisode) thisYearEpisodes++;
+      else thisYearMovies++;
+    }
+
+    if (media.type === "movie") byType.movie += runtime;
+    else if (media.type === "tv") byType.tv += runtime;
+
+    if (isEpisode) {
+      const mid = e.media_id as string;
+      const cur = showAgg.get(mid) ?? {
+        title: media.title,
+        posterPath: media.poster_path,
+        epCount: 0,
+        minutes: 0,
+      };
+      cur.epCount++;
+      cur.minutes += runtime;
+      showAgg.set(mid, cur);
+    }
+
+    if (
+      watched.getMonth() === currentMonth &&
+      watched.getDate() === currentDate &&
+      watched.getFullYear() < currentYear
+    ) {
+      onThisDay.push({
+        mediaId: e.media_id as string,
+        title: media.title,
+        posterPath: media.poster_path,
+        tmdbType: media.type,
+        watchedAt: e.watched_at as string,
+        yearsAgo: currentYear - watched.getFullYear(),
+        isEpisode,
+      });
+    }
+  }
+
+  const topShowsSorted = [...showAgg.entries()]
+    .sort((a, b) => b[1].epCount - a[1].epCount)
+    .slice(0, 5);
+
+  const idsToResolve = new Set<string>();
+  topShowsSorted.forEach(([id]) => idsToResolve.add(id));
+  onThisDay.forEach((o) => idsToResolve.add(o.mediaId));
+  const tmdbMap = await getTmdbIdMap([...idsToResolve]);
+
+  return {
+    lifetime: {
+      totalMinutes: lifetimeMinutes,
+      moviesWatched: moviesLifetime,
+      episodesWatched: episodesLifetime,
+      showsCompleted,
+    },
+    thisYear: {
+      year: currentYear,
+      totalMinutes: thisYearMinutes,
+      movies: thisYearMovies,
+      episodes: thisYearEpisodes,
+    },
+    byType,
+    topShows: topShowsSorted.map(([mediaId, s]) => ({
+      mediaId,
+      title: s.title,
+      posterPath: s.posterPath,
+      tmdbId: tmdbMap.get(mediaId) ?? null,
+      episodeCount: s.epCount,
+      minutes: s.minutes,
+    })),
+    onThisDay: onThisDay
+      .sort((a, b) => a.yearsAgo - b.yearsAgo)
+      .slice(0, 10)
+      .map((o) => ({ ...o, tmdbId: tmdbMap.get(o.mediaId) ?? null })),
+  };
+}
+
 // ─── Continue Watching (existing) ──────────────────────────────────────────
 
 export type ContinueWatchingItem = {

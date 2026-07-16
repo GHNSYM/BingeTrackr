@@ -21,12 +21,15 @@ export default async function HomePage() {
             Hey, @{profile.username}.
           </h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button asChild variant="outline" size="sm">
             <Link href="/library">Library</Link>
           </Button>
           <Button asChild variant="outline" size="sm">
             <Link href="/discover">Discover</Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/stats">Stats</Link>
           </Button>
         </div>
       </header>
