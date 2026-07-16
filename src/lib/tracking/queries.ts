@@ -1,6 +1,275 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 
+// ─── Library ───────────────────────────────────────────────────────────────
+
+export type LibraryPosterItem = {
+  mediaId: string;
+  title: string;
+  posterPath: string | null;
+  tmdbId: string | null;
+  tmdbType: "movie" | "tv";
+  releaseYear: number | null;
+  /** Small subtitle for the poster card — e.g. "Watched · 3 days ago". */
+  meta?: string | null;
+  /** Optional user rating (1-10). */
+  rating?: number | null;
+};
+
+export type LibraryCounts = {
+  watching: number;
+  watched: number;
+  watchlist: number;
+  dropped: number;
+};
+
+/**
+ * Counts for the tab badges. Five small queries in parallel; each is a
+ * head-only count (no rows returned, just the aggregate).
+ */
+export async function getLibraryCounts(): Promise<LibraryCounts> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const empty = { watching: 0, watched: 0, watchlist: 0, dropped: 0 };
+  if (!user) return empty;
+
+  const [
+    watchingRes,
+    watchedMoviesRes,
+    completedShowsRes,
+    watchlistRes,
+    droppedRes,
+  ] = await Promise.all([
+    supabase
+      .from("show_progress")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "watching"),
+    supabase
+      .from("watched_entries")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .is("episode_id", null),
+    supabase
+      .from("show_progress")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "completed"),
+    supabase
+      .from("watchlist_entries")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", user.id),
+    supabase
+      .from("show_progress")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("status", "dropped"),
+  ]);
+
+  return {
+    watching: watchingRes.count ?? 0,
+    watched: (watchedMoviesRes.count ?? 0) + (completedShowsRes.count ?? 0),
+    watchlist: watchlistRes.count ?? 0,
+    dropped: droppedRes.count ?? 0,
+  };
+}
+
+/**
+ * "Watched" = movies you marked + shows you set to Completed. Deduped by
+ * media_id (in case a movie was marked multiple times as a rewatch).
+ * Sorted by most recent.
+ */
+export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const [movies, shows] = await Promise.all([
+    supabase
+      .from("watched_entries")
+      .select(
+        `media_id, watched_at,
+         media:media_id ( id, title, poster_path, type, release_year )`,
+      )
+      .eq("user_id", user.id)
+      .is("episode_id", null)
+      .order("watched_at", { ascending: false }),
+    supabase
+      .from("show_progress")
+      .select(
+        `media_id, status_changed_at,
+         media:media_id ( id, title, poster_path, type, release_year )`,
+      )
+      .eq("user_id", user.id)
+      .eq("status", "completed")
+      .order("status_changed_at", { ascending: false }),
+  ]);
+
+  type Row = {
+    media_id: string;
+    when: string;
+    media: {
+      id: string;
+      title: string;
+      poster_path: string | null;
+      type: "movie" | "tv";
+      release_year: number | null;
+    };
+  };
+
+  const rows: Row[] = [
+    ...(movies.data ?? []).map((r) => ({
+      media_id: r.media_id as string,
+      when: r.watched_at as string,
+      media: r.media as Row["media"],
+    })),
+    ...(shows.data ?? []).map((r) => ({
+      media_id: r.media_id as string,
+      when: r.status_changed_at as string,
+      media: r.media as Row["media"],
+    })),
+  ];
+
+  // Dedupe by media_id — keep the most recent.
+  const bestByMedia = new Map<string, Row>();
+  for (const r of rows) {
+    const prev = bestByMedia.get(r.media_id);
+    if (!prev || new Date(r.when).getTime() > new Date(prev.when).getTime()) {
+      bestByMedia.set(r.media_id, r);
+    }
+  }
+
+  const deduped = [...bestByMedia.values()].sort(
+    (a, b) => new Date(b.when).getTime() - new Date(a.when).getTime(),
+  );
+
+  const tmdbMap = await getTmdbIdMap(deduped.map((r) => r.media_id));
+
+  return deduped.map((r) => ({
+    mediaId: r.media_id,
+    title: r.media.title,
+    posterPath: r.media.poster_path,
+    tmdbId: tmdbMap.get(r.media_id) ?? null,
+    tmdbType: r.media.type,
+    releaseYear: r.media.release_year,
+    meta: relativeWhen(r.when),
+  }));
+}
+
+export async function getWatchlistItems(): Promise<LibraryPosterItem[]> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const { data } = await supabase
+    .from("watchlist_entries")
+    .select(
+      `media_id, added_at, priority,
+       media:media_id ( id, title, poster_path, type, release_year )`,
+    )
+    .eq("user_id", user.id)
+    .order("priority", { ascending: false })
+    .order("added_at", { ascending: false });
+
+  if (!data) return [];
+  const tmdbMap = await getTmdbIdMap(data.map((r) => r.media_id as string));
+
+  return data.map((r) => {
+    const m = r.media as {
+      title: string;
+      poster_path: string | null;
+      type: "movie" | "tv";
+      release_year: number | null;
+    };
+    return {
+      mediaId: r.media_id as string,
+      title: m.title,
+      posterPath: m.poster_path,
+      tmdbId: tmdbMap.get(r.media_id as string) ?? null,
+      tmdbType: m.type,
+      releaseYear: m.release_year,
+      meta: relativeWhen(r.added_at as string, "Added"),
+    };
+  });
+}
+
+export async function getDroppedItems(): Promise<LibraryPosterItem[]> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const { data } = await supabase
+    .from("show_progress")
+    .select(
+      `media_id, status_changed_at,
+       media:media_id ( id, title, poster_path, type, release_year )`,
+    )
+    .eq("user_id", user.id)
+    .eq("status", "dropped")
+    .order("status_changed_at", { ascending: false });
+
+  if (!data) return [];
+  const tmdbMap = await getTmdbIdMap(data.map((r) => r.media_id as string));
+
+  return data.map((r) => {
+    const m = r.media as {
+      title: string;
+      poster_path: string | null;
+      type: "movie" | "tv";
+      release_year: number | null;
+    };
+    return {
+      mediaId: r.media_id as string,
+      title: m.title,
+      posterPath: m.poster_path,
+      tmdbId: tmdbMap.get(r.media_id as string) ?? null,
+      tmdbType: m.type,
+      releaseYear: m.release_year,
+      meta: relativeWhen(r.status_changed_at as string, "Dropped"),
+    };
+  });
+}
+
+// ─── Internal ──────────────────────────────────────────────────────────────
+
+async function getTmdbIdMap(mediaIds: string[]): Promise<Map<string, string>> {
+  if (mediaIds.length === 0) return new Map();
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("media_external_ids")
+    .select("media_id, external_id")
+    .eq("source", "tmdb")
+    .in("media_id", mediaIds);
+  const map = new Map<string, string>();
+  for (const r of data ?? []) {
+    map.set(r.media_id as string, r.external_id as string);
+  }
+  return map;
+}
+
+function relativeWhen(iso: string, prefix = "Watched"): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const diffMs = Math.max(0, now - then);
+  const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (days === 0) return `${prefix} · today`;
+  if (days === 1) return `${prefix} · yesterday`;
+  if (days < 7) return `${prefix} · ${days}d ago`;
+  if (days < 30) return `${prefix} · ${Math.floor(days / 7)}w ago`;
+  if (days < 365) return `${prefix} · ${Math.floor(days / 30)}mo ago`;
+  return `${prefix} · ${Math.floor(days / 365)}y ago`;
+}
+
+// ─── Continue Watching (existing) ──────────────────────────────────────────
+
 export type ContinueWatchingItem = {
   mediaId: string;
   title: string;
