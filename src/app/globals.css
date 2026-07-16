@@ -64,6 +64,7 @@
   --text: #161618;
   --body: #54545B;
   --meta: #86868E;
+  --accent-ink: var(--accent-foreground);
   --scrim: rgba(18, 18, 22, 0.4);
   --shadow: 0 12px 36px rgba(40, 40, 48, 0.16);
   --poster-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -110,6 +111,7 @@
   --text: #FFFFFF;
   --body: #A6A6AE;
   --meta: #6C6C75;
+  --accent-ink: var(--accent-foreground);
   --scrim: rgba(0, 0, 0, 0.62);
   --shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
   --poster-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
