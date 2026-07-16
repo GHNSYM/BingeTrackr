@@ -323,6 +323,101 @@ export async function setShowStatusAction(args: {
   return { ok: true };
 }
 
+// ─── Watchlist ─────────────────────────────────────────────────────────────
+
+export async function toggleWatchlistAction(
+  mediaId: string,
+): Promise<TrackingResult & { inWatchlist?: boolean }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const { data: existing } = await supabase
+    .from("watchlist_entries")
+    .select("media_id")
+    .eq("user_id", user.id)
+    .eq("media_id", mediaId)
+    .maybeSingle();
+
+  if (existing) {
+    const { error } = await supabase
+      .from("watchlist_entries")
+      .delete()
+      .eq("user_id", user.id)
+      .eq("media_id", mediaId);
+    if (error) return { error: error.message };
+    revalidatePath("/title/[type]/[id]", "layout");
+    revalidatePath("/home");
+    return { ok: true, inWatchlist: false };
+  } else {
+    const { error } = await supabase.from("watchlist_entries").insert({
+      user_id: user.id,
+      media_id: mediaId,
+    });
+    if (error) return { error: error.message };
+    revalidatePath("/title/[type]/[id]", "layout");
+    revalidatePath("/home");
+    return { ok: true, inWatchlist: true };
+  }
+}
+
+// ─── Ratings ───────────────────────────────────────────────────────────────
+
+export async function rateMediaAction(args: {
+  mediaId: string;
+  score: number;
+}): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  if (
+    !Number.isInteger(args.score) ||
+    args.score < 1 ||
+    args.score > 10
+  ) {
+    return { error: "invalid-score" };
+  }
+
+  const { error } = await supabase.from("ratings").upsert(
+    {
+      user_id: user.id,
+      media_id: args.mediaId,
+      score: args.score,
+      reviewed_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,media_id" },
+  );
+
+  if (error) return { error: error.message };
+  revalidatePath("/title/[type]/[id]", "layout");
+  return { ok: true };
+}
+
+export async function unrateMediaAction(
+  mediaId: string,
+): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const { error } = await supabase
+    .from("ratings")
+    .delete()
+    .eq("user_id", user.id)
+    .eq("media_id", mediaId);
+
+  if (error) return { error: error.message };
+  revalidatePath("/title/[type]/[id]", "layout");
+  return { ok: true };
+}
+
 // ─── Reads (for server components) ─────────────────────────────────────────
 
 export type ShowProgress = {
@@ -349,6 +444,40 @@ export async function getShowProgress(
     .maybeSingle();
 
   return (data ?? null) as ShowProgress | null;
+}
+
+export async function isInWatchlist(mediaId: string): Promise<boolean> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return false;
+
+  const { data } = await supabase
+    .from("watchlist_entries")
+    .select("media_id")
+    .eq("user_id", user.id)
+    .eq("media_id", mediaId)
+    .maybeSingle();
+
+  return !!data;
+}
+
+export async function getMyRating(mediaId: string): Promise<number | null> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data } = await supabase
+    .from("ratings")
+    .select("score")
+    .eq("user_id", user.id)
+    .eq("media_id", mediaId)
+    .maybeSingle();
+
+  return (data?.score as number | null) ?? null;
 }
 
 export async function isMovieWatched(mediaId: string): Promise<boolean> {

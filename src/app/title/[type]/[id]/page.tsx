@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { EpisodeProgressWidget } from "@/components/trackr/EpisodeProgressWidget";
 import { MarkWatchedButton } from "@/components/trackr/MarkWatchedButton";
+import { RateButton } from "@/components/trackr/RateButton";
+import { WatchlistButton } from "@/components/trackr/WatchlistButton";
 import { createClient } from "@/lib/supabase/server";
 import {
   backdropUrl,
@@ -20,7 +22,9 @@ import {
 } from "@/lib/tmdb/seasons";
 import { upsertMovie, upsertTv } from "@/lib/tmdb/upsert";
 import {
+  getMyRating,
   getShowProgress,
+  isInWatchlist,
   isMovieWatched,
 } from "@/lib/tracking/actions";
 
@@ -147,6 +151,11 @@ export default async function TitleDetailPage({
   const movieWatched =
     type === "movie" && user ? await isMovieWatched(ourMediaId) : false;
 
+  // Watchlist + rating apply to BOTH types.
+  const [inWatchlist, myRating] = user
+    ? await Promise.all([isInWatchlist(ourMediaId), getMyRating(ourMediaId)])
+    : [false, null];
+
   return (
     <main className="flex-1 flex flex-col">
       {/* Hero — blurred backdrop + poster + title */}
@@ -224,34 +233,37 @@ export default async function TitleDetailPage({
             </div>
           </div>
 
-          {/* Action row (movie only — TV actions live in the progress widget) */}
-          {type === "movie" && (
-            <div className="mt-6 flex flex-wrap gap-2">
-              {user ? (
-                <>
+          {/* Action row — Watchlist + Rate live on BOTH movie and TV.
+              Mark-watched is movie-only (episode marking lives in the widget). */}
+          <div className="mt-6 flex flex-wrap gap-2">
+            {user ? (
+              <>
+                {type === "movie" && (
                   <MarkWatchedButton
                     mediaId={ourMediaId}
                     initiallyWatched={movieWatched}
                   />
-                  <Button variant="outline" disabled className="cursor-not-allowed">
-                    + Watchlist
-                  </Button>
-                  <Button variant="outline" disabled className="cursor-not-allowed">
-                    Rate
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button asChild>
-                    <Link href="/signup">Sign up to track</Link>
-                  </Button>
-                  <Button asChild variant="outline">
-                    <Link href="/login">Log in</Link>
-                  </Button>
-                </>
-              )}
-            </div>
-          )}
+                )}
+                <WatchlistButton
+                  mediaId={ourMediaId}
+                  initiallyInWatchlist={inWatchlist}
+                />
+                <RateButton
+                  mediaId={ourMediaId}
+                  initialScore={myRating}
+                />
+              </>
+            ) : (
+              <>
+                <Button asChild>
+                  <Link href="/signup">Sign up to track</Link>
+                </Button>
+                <Button asChild variant="outline">
+                  <Link href="/login">Log in</Link>
+                </Button>
+              </>
+            )}
+          </div>
 
           {/* TV — the founding feature */}
           {type === "tv" && tvData && (
