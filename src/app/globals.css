@@ -1,26 +1,203 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --font-sans: var(--font-inter);
+  --font-display: var(--font-manrope);
+
+  --radius-input: 12px;
+  --radius-card: 16px;
+  --radius-hero: 20px;
+  --radius-pill: 9999px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ─────────────────────────────────────────────────────────────
+   LIGHT theme — pale paper, dark ink on white primary
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --background: #E7E7EA;
+  --foreground: #161618;
+  --card: rgba(255, 255, 255, 0.62);
+  --card-foreground: #161618;
+  --popover: rgba(255, 255, 255, 0.9);
+  --popover-foreground: #161618;
+  --primary: #161618;
+  --primary-foreground: #FFFFFF;
+  --secondary: rgba(255, 255, 255, 0.85);
+  --secondary-foreground: #161618;
+  --muted: rgba(255, 255, 255, 0.62);
+  --muted-foreground: #86868E;
+  --accent: #161618;
+  --accent-foreground: #FFFFFF;
+  --destructive: #e5484d;
+  --border: rgba(18, 18, 22, 0.10);
+  --input: rgba(18, 18, 22, 0.10);
+  --ring: rgba(18, 18, 22, 0.35);
+
+  /* Design-handoff aliases */
+  --bg: #E7E7EA;
+  --bg2: #EFEFF1;
+  --surface: rgba(255, 255, 255, 0.62);
+  --surface2: rgba(255, 255, 255, 0.85);
+  --text: #161618;
+  --body: #54545B;
+  --meta: #86868E;
+  --scrim: rgba(18, 18, 22, 0.4);
+  --shadow: 0 12px 36px rgba(40, 40, 48, 0.16);
+  --poster-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Status hues — muted for light theme */
+  --status-watching: #b58800;
+  --status-completed: #2f7f47;
+  --status-paused: #86868E;
+  --status-dropped: #b93a3f;
+  --unread: #d95a2f;
+  --online: #2f9e4a;
+
+  --skel: linear-gradient(90deg, rgba(0,0,0,.04) 25%, rgba(0,0,0,.10) 37%, rgba(0,0,0,.04) 63%);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   DARK theme (default — html.dark set in layout.tsx)
+   ───────────────────────────────────────────────────────────── */
+.dark {
+  --background: #0B0B0D;
+  --foreground: #FFFFFF;
+  --card: rgba(255, 255, 255, 0.06);
+  --card-foreground: #FFFFFF;
+  --popover: rgba(20, 20, 22, 0.94);
+  --popover-foreground: #FFFFFF;
+  --primary: #FFFFFF;
+  --primary-foreground: #0B0B0D;
+  --secondary: rgba(255, 255, 255, 0.11);
+  --secondary-foreground: #FFFFFF;
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: #6C6C75;
+  --accent: #FFFFFF;
+  --accent-foreground: #0B0B0D;
+  --destructive: #e5484d;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.11);
+  --ring: rgba(255, 255, 255, 0.4);
+
+  /* Design-handoff aliases */
+  --bg: #0B0B0D;
+  --bg2: #0E0E11;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface2: rgba(255, 255, 255, 0.11);
+  --text: #FFFFFF;
+  --body: #A6A6AE;
+  --meta: #6C6C75;
+  --scrim: rgba(0, 0, 0, 0.62);
+  --shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+  --poster-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+
+  /* Status hues — brighter for dark theme, still restrained */
+  --status-watching: #f0b800;
+  --status-completed: #3fb950;
+  --status-paused: #A6A6AE;
+  --status-dropped: #e5484d;
+  --unread: #e0653f;
+  --online: #3fb950;
+
+  --skel: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.10) 37%, rgba(255,255,255,.04) 63%);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    letter-spacing: -0.01em;
+  }
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display), var(--font-inter), system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.025em;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ─────────────────────────────────────────────────────────────
+   Utility classes for design-handoff patterns
+   ───────────────────────────────────────────────────────────── */
+
+.glass {
+  background: var(--surface);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid var(--border);
+}
+
+.glass-raised {
+  background: var(--surface2);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  border: 1px solid var(--border);
+}
+
+.text-body   { color: var(--body); }
+.text-meta   { color: var(--meta); }
+
+/* Skeleton shimmer — used for all loading states (never spinners) */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: var(--skel);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: var(--radius-input);
+}
+
+/* Mark-watched pop — the signature micro-interaction */
+@keyframes pop {
+  0%   { transform: scale(0.3); opacity: 0; }
+  60%  { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+.animate-pop { animation: pop 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* Respect motion preferences on cheap Android devices */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .animate-pop { animation: none; }
+}
+
+/* Perf mitigation: drop backdrop blurs when user prefers reduced transparency */
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-raised {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--bg2);
+  }
 }
