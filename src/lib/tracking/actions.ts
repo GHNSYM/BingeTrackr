@@ -45,6 +45,7 @@ export async function markMovieWatchedAction(
   }
 
   revalidatePath("/title/movie/[id]", "layout");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -66,6 +67,7 @@ export async function unmarkMovieWatchedAction(
 
   if (error) return { error: error.message };
   revalidatePath("/title/movie/[id]", "layout");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -136,6 +138,7 @@ export async function markEpisodeWatchedAction(args: {
   if (progressError) return { error: progressError.message };
 
   revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -158,6 +161,7 @@ export async function unmarkEpisodeAction(args: {
 
   if (error) return { error: error.message };
   revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -187,6 +191,7 @@ export async function setShowStatusAction(args: {
 
   if (error) return { error: error.message };
   revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/home");
   return { ok: true };
 }
 
