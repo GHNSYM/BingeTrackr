@@ -212,8 +212,14 @@ function SearchDropdown({
 }) {
   return (
     <div
-      className="glass absolute top-[calc(100%+8px)] left-0 right-0 flex flex-col overflow-hidden shadow-lg"
+      className="absolute top-[calc(100%+8px)] left-0 right-0 flex flex-col overflow-hidden"
       style={{
+        // Modal-strength opacity per the design handoff — the thin .glass
+        // (~6% white) reads as invisible when floating over content.
+        background: "color-mix(in srgb, var(--bg) 92%, transparent)",
+        backdropFilter: "blur(28px) saturate(1.4)",
+        WebkitBackdropFilter: "blur(28px) saturate(1.4)",
+        border: "1px solid var(--border)",
         borderRadius: "var(--radius-card)",
         boxShadow: "var(--shadow)",
       }}

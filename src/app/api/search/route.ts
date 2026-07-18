@@ -38,7 +38,7 @@ export async function GET(request: Request) {
   try {
     const raw = await searchMulti(q);
     // searchMulti already filters to movie + tv (drops people).
-    const shaped: SearchApiResult[] = raw.slice(0, 8).map((r) => ({
+    const shaped: SearchApiResult[] = raw.slice(0, 5).map((r) => ({
       id: r.id,
       type: r.media_type as "movie" | "tv",
       title: titleFromResult(r),
