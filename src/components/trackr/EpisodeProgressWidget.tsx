@@ -106,6 +106,7 @@ export function EpisodeProgressWidget({
                 key={s.season_number}
                 href={`/title/tv/${tmdbTvId}?s=${s.season_number}`}
                 scroll={false}
+                replace
                 className="px-4 py-1.5 text-sm font-semibold rounded-full transition"
                 style={{
                   background: isActive ? "var(--accent)" : "var(--secondary)",

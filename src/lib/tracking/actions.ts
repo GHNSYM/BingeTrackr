@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
+import { getTv } from "@/lib/tmdb/client";
+import { ensureSeasonCached } from "@/lib/tmdb/seasons";
 
 export type TrackingResult = { ok: true } | { error: string };
 
@@ -307,6 +310,8 @@ export async function setShowStatusAction(args: {
   } = await supabase.auth.getUser();
   if (!user) return { error: "not-signed-in" };
 
+  // Primary: update the status. Do this first so a failure in the
+  // mark-all path below doesn't lose the user's status change.
   const { error } = await supabase.from("show_progress").upsert(
     {
       user_id: user.id,
@@ -316,11 +321,137 @@ export async function setShowStatusAction(args: {
     },
     { onConflict: "user_id,media_id" },
   );
-
   if (error) return { error: error.message };
+
+  // Secondary: when a user marks a show as Completed, they've clearly
+  // finished it. Auto-mark every episode as watched (best-effort — a
+  // partial cache miss shouldn't fail the status change).
+  if (args.status === "completed") {
+    try {
+      await markEveryEpisodeWatched(supabase, user.id, args.mediaId);
+    } catch (err) {
+      console.error("auto mark-all on completed failed:", err);
+    }
+  }
+
   revalidatePath("/title/tv/[id]", "layout");
   revalidatePath("/home");
   return { ok: true };
+}
+
+/**
+ * Given a show's media_id, ensure every season+episode is cached (fetches
+ * from TMDB in parallel), then batch-insert watched_entries for anything
+ * the user hasn't already marked, and point show_progress at the last
+ * episode of the last season.
+ */
+async function markEveryEpisodeWatched(
+  supabase: SupabaseClient,
+  userId: string,
+  mediaId: string,
+): Promise<void> {
+  // 1) Cache all seasons via TMDB. Requires the show's tmdb id.
+  const { data: extId } = await supabase
+    .from("media_external_ids")
+    .select("external_id")
+    .eq("media_id", mediaId)
+    .eq("source", "tmdb")
+    .maybeSingle();
+
+  if (extId?.external_id) {
+    const tv = await getTv(extId.external_id as string);
+    const realSeasons = tv.seasons.filter((s) => s.season_number > 0);
+    // Parallel cache-fill — TMDB has generous rate limits so even a 20-
+    // season show completes in ~one round-trip.
+    await Promise.all(
+      realSeasons.map((s) =>
+        ensureSeasonCached(
+          mediaId,
+          extId.external_id as string,
+          s.season_number,
+        ).catch((err) => {
+          console.error(`ensureSeasonCached S${s.season_number} failed`, err);
+        }),
+      ),
+    );
+  }
+
+  // 2) Pull every cached episode for this show.
+  const { data: seasons } = await supabase
+    .from("seasons")
+    .select("id, season_number")
+    .eq("media_id", mediaId);
+  if (!seasons || seasons.length === 0) return;
+
+  const seasonIds = (seasons as { id: string; season_number: number }[]).map(
+    (s) => s.id,
+  );
+  const seasonNumberById = new Map<string, number>(
+    (seasons as { id: string; season_number: number }[]).map((s) => [
+      s.id,
+      s.season_number,
+    ]),
+  );
+
+  const { data: episodes } = await supabase
+    .from("episodes")
+    .select("id, episode_number, runtime_minutes, season_id")
+    .in("season_id", seasonIds);
+  if (!episodes || episodes.length === 0) return;
+
+  // 3) Find which the user hasn't already marked.
+  const episodeIds = episodes.map((e) => e.id as string);
+  const { data: already } = await supabase
+    .from("watched_entries")
+    .select("episode_id")
+    .eq("user_id", userId)
+    .in("episode_id", episodeIds);
+  const alreadySet = new Set(
+    (already ?? []).map((r) => r.episode_id as string),
+  );
+
+  const toInsert = episodes
+    .filter((e) => !alreadySet.has(e.id as string))
+    .map((e) => ({
+      user_id: userId,
+      media_id: mediaId,
+      episode_id: e.id as string,
+      runtime_minutes: (e.runtime_minutes as number | null) ?? null,
+    }));
+
+  if (toInsert.length > 0) {
+    const { error } = await supabase.from("watched_entries").insert(toInsert);
+    if (error) throw new Error(`mark-all insert failed: ${error.message}`);
+  }
+
+  // 4) Point show_progress at the last episode of the last season.
+  const withSeason = episodes.map((e) => ({
+    id: e.id as string,
+    episode_number: e.episode_number as number,
+    season_number:
+      seasonNumberById.get(e.season_id as string) ?? 0,
+  }));
+  withSeason.sort((a, b) => {
+    if (a.season_number !== b.season_number) {
+      return b.season_number - a.season_number;
+    }
+    return b.episode_number - a.episode_number;
+  });
+  const lastEp = withSeason[0];
+  if (lastEp) {
+    await supabase.from("show_progress").upsert(
+      {
+        user_id: userId,
+        media_id: mediaId,
+        status: "completed",
+        current_season: lastEp.season_number,
+        current_episode: lastEp.episode_number,
+        last_watched_episode: lastEp.id,
+        status_changed_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,media_id" },
+    );
+  }
 }
 
 // ─── Watchlist ─────────────────────────────────────────────────────────────
