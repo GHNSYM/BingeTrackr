@@ -29,7 +29,11 @@ export default async function DiscoverPage({
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">
             Discover
           </h1>
-          <SearchBar initialQuery={query} />
+          {/* On desktop the topbar has search. On mobile there's no topbar,
+              so we keep the input here as the entry point. */}
+          <div className="md:hidden">
+            <SearchBar initialQuery={query} />
+          </div>
           <TypePills active={type ?? "all"} query={query} />
         </div>
 
