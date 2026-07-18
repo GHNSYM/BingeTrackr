@@ -1,6 +1,14 @@
 "use client";
 
-import { BarChart3, Check, Compass, Home, LibraryBig, Layers } from "lucide-react";
+import {
+  BarChart3,
+  Check,
+  Compass,
+  Home,
+  LibraryBig,
+  Layers,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserChip } from "./UserChip";
@@ -8,7 +16,7 @@ import { UserChip } from "./UserChip";
 type NavItem = {
   href: string;
   label: string;
-  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+  icon: LucideIcon;
   disabled?: boolean;
 };
 

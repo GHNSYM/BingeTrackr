@@ -3,7 +3,7 @@ import {
   titleFromResult,
   trendingInRegion,
   yearFromResult,
-  type TmdbSearchResult,
+  type TmdbMediaSearchResult,
 } from "@/lib/tmdb/client";
 import { PosterCard } from "@/components/trackr/PosterCard";
 import { SearchBar } from "@/components/trackr/SearchBar";
@@ -151,7 +151,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function PosterGrid({
   results,
 }: {
-  results: (TmdbSearchResult & { media_type: "movie" | "tv" })[];
+  results: TmdbMediaSearchResult[];
 }) {
   return (
     <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fill, 180px)" }}>

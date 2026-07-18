@@ -126,12 +126,12 @@ export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
     ...(movies.data ?? []).map((r) => ({
       media_id: r.media_id as string,
       when: r.watched_at as string,
-      media: r.media as Row["media"],
+      media: r.media as unknown as Row["media"],
     })),
     ...(shows.data ?? []).map((r) => ({
       media_id: r.media_id as string,
       when: r.status_changed_at as string,
-      media: r.media as Row["media"],
+      media: r.media as unknown as Row["media"],
     })),
   ];
 
@@ -182,7 +182,7 @@ export async function getWatchlistItems(): Promise<LibraryPosterItem[]> {
   const tmdbMap = await getTmdbIdMap(data.map((r) => r.media_id as string));
 
   return data.map((r) => {
-    const m = r.media as {
+    const m = r.media as unknown as {
       title: string;
       poster_path: string | null;
       type: "movie" | "tv";
@@ -221,7 +221,7 @@ export async function getDroppedItems(): Promise<LibraryPosterItem[]> {
   const tmdbMap = await getTmdbIdMap(data.map((r) => r.media_id as string));
 
   return data.map((r) => {
-    const m = r.media as {
+    const m = r.media as unknown as {
       title: string;
       poster_path: string | null;
       type: "movie" | "tv";
@@ -401,7 +401,7 @@ export async function getStats(overrideUserId?: string): Promise<Stats> {
   for (const e of entries) {
     const runtime = (e.runtime_minutes as number | null) ?? 0;
     const isEpisode = e.episode_id !== null;
-    const media = e.media as {
+    const media = e.media as unknown as {
       title: string;
       poster_path: string | null;
       type: "movie" | "tv";
@@ -572,7 +572,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
 
   // Assigned first so their order is stable.
   for (const row of assignmentsRes.data ?? []) {
-    const m = row.media as MediaRow | null;
+    const m = row.media as unknown as MediaRow | null;
     if (!m) continue;
     assignedIds.add(row.media_id as string);
     items.push({
@@ -596,7 +596,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
     const id = row.media_id as string;
     if (seen.has(id)) continue;
     seen.add(id);
-    const m = row.media as MediaRow | null;
+    const m = row.media as unknown as MediaRow | null;
     if (!m) continue;
     items.push({
       mediaId: id,
@@ -725,12 +725,12 @@ export async function getRecentActivity(
   const tmdbMap = await getTmdbIdMap(mediaIds);
 
   return data.map((r) => {
-    const media = r.media as {
+    const media = r.media as unknown as {
       title: string;
       poster_path: string | null;
       type: "movie" | "tv";
     };
-    const ep = r.episode as {
+    const ep = r.episode as unknown as {
       episode_number: number;
       name: string | null;
       seasons: { season_number: number };
@@ -796,16 +796,18 @@ export async function getPublicListsByUser(
           .limit(4),
       ]);
 
+      const coverPosters: (string | null)[] = (items ?? []).map((i) => {
+        const m = i.media as unknown as { poster_path: string | null } | null;
+        return m?.poster_path ?? null;
+      });
+
       return {
         id: listId,
         name: list.name as string,
         description: list.description as string | null,
         slug: list.slug as string,
         itemCount: count ?? 0,
-        coverPosters: (items ?? []).map((i) => {
-          const m = i.media as { poster_path: string | null } | null;
-          return m?.poster_path ?? null;
-        }),
+        coverPosters,
       };
     }),
   );
@@ -937,14 +939,19 @@ export async function getContinueWatching(
         .eq("seasons.media_id", row.media_id);
 
       const sorted = (allEps ?? [])
-        .map((e) => ({
-          id: e.id as string,
-          episode_number: e.episode_number as number,
-          name: (e.name as string | null) ?? null,
-          runtime_minutes: (e.runtime_minutes as number | null) ?? null,
-          season_number:
-            (e as { seasons: { season_number: number } }).seasons.season_number,
-        }))
+        .map((e) => {
+          const season = (e as unknown as {
+            seasons: { season_number: number }[];
+          }).seasons?.[0];
+
+          return {
+            id: e.id as string,
+            episode_number: e.episode_number as number,
+            name: (e.name as string | null) ?? null,
+            runtime_minutes: (e.runtime_minutes as number | null) ?? null,
+            season_number: season?.season_number ?? 0,
+          };
+        })
         .sort((a, b) =>
           a.season_number !== b.season_number
             ? a.season_number - b.season_number

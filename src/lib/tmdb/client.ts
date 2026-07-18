@@ -28,6 +28,10 @@ export type TmdbSearchResult = {
   vote_average?: number;
 };
 
+export type TmdbMediaSearchResult = TmdbSearchResult & {
+  media_type: TmdbMediaType;
+};
+
 export type TmdbMovieDetails = {
   id: number;
   title: string;
@@ -122,7 +126,7 @@ async function tmdb<T>(
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-export async function searchMulti(query: string) {
+export async function searchMulti(query: string): Promise<TmdbMediaSearchResult[]> {
   const data = await tmdb<{ results: TmdbSearchResult[] }>(
     "/search/multi",
     { query, include_adult: "false" },
@@ -131,14 +135,15 @@ export async function searchMulti(query: string) {
   );
   // Drop person results — this is a media tracker.
   return data.results.filter(
-    (r) => r.media_type === "movie" || r.media_type === "tv",
+    (r): r is TmdbMediaSearchResult =>
+      r.media_type === "movie" || r.media_type === "tv",
   );
 }
 
 export async function trendingInRegion(
   region: string = "IN",
   window: "day" | "week" = "week",
-) {
+): Promise<TmdbMediaSearchResult[]> {
   // TMDB /trending doesn't accept region — filter by original_language 'hi'
   // + surrounding trending signal by pulling both movie + tv day trending.
   const [movies, tv] = await Promise.all([

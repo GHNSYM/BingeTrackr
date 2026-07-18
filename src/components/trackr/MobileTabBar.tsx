@@ -1,13 +1,13 @@
 "use client";
 
-import { Compass, Home, LibraryBig, User } from "lucide-react";
+import { Compass, Home, LibraryBig, User, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 type Tab = {
   href: string;
   label: string;
-  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+  icon: LucideIcon;
   matchPrefix?: string;
 };
 
