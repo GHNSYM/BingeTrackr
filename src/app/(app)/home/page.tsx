@@ -61,10 +61,13 @@ export default async function HomePage() {
 
       {/* Sign out — tucked at the bottom so it's out of the way */}
       <footer className="mt-auto pt-8 flex justify-between items-center gap-4 border-t border-border">
-        <span className="text-xs text-meta">
+        <Link
+          href={`/u/${profile.username}`}
+          className="text-xs text-meta hover:text-foreground transition"
+        >
           @{profile.username} · {profile.is_public ? "Public" : "Private"} ·{" "}
           {profile.region ?? "IN"}
-        </span>
+        </Link>
         <form action={signOutAction}>
           <Button type="submit" variant="ghost" size="sm">
             Log out

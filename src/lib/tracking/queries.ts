@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import type { Profile } from "@/types/db";
 
 // ─── Library ───────────────────────────────────────────────────────────────
 
@@ -311,11 +312,20 @@ export type Stats = {
  * tens of thousands of watched entries; if a user ever crosses that we
  * push some of this into a Postgres function.
  */
-export async function getStats(): Promise<Stats> {
+/**
+ * Optionally scoped to a specific user id (for public profiles). If omitted,
+ * uses the current auth session. RLS enforces that a caller can only read
+ * another user's aggregates if that user's profile is_public = true.
+ */
+export async function getStats(overrideUserId?: string): Promise<Stats> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let targetUserId = overrideUserId;
+  if (!targetUserId) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    targetUserId = user?.id;
+  }
 
   const empty: Stats = {
     lifetime: {
@@ -334,7 +344,7 @@ export async function getStats(): Promise<Stats> {
     topShows: [],
     onThisDay: [],
   };
-  if (!user) return empty;
+  if (!targetUserId) return empty;
 
   const [entriesRes, completedRes] = await Promise.all([
     supabase
@@ -343,11 +353,11 @@ export async function getStats(): Promise<Stats> {
         `watched_at, runtime_minutes, media_id, episode_id,
          media:media_id ( id, title, poster_path, type )`,
       )
-      .eq("user_id", user.id),
+      .eq("user_id", targetUserId),
     supabase
       .from("show_progress")
       .select("media_id", { count: "exact", head: true })
-      .eq("user_id", user.id)
+      .eq("user_id", targetUserId)
       .eq("status", "completed"),
   ]);
 
@@ -478,6 +488,203 @@ export async function getStats(): Promise<Stats> {
       .slice(0, 10)
       .map((o) => ({ ...o, tmdbId: tmdbMap.get(o.mediaId) ?? null })),
   };
+}
+
+// ─── Public profile helpers ────────────────────────────────────────────────
+
+export async function getProfileByUsername(
+  username: string,
+): Promise<Profile | null> {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("username", username)
+    .maybeSingle<Profile>();
+  // RLS returns null if the profile is private and viewer isn't the owner.
+  return data;
+}
+
+export type PublicProfileCounts = {
+  shows: number;
+  episodes: number;
+  hours: number;
+  lists: number;
+};
+
+/**
+ * Compact numbers for the public profile header row.
+ */
+export async function getPublicProfileCounts(
+  userId: string,
+): Promise<PublicProfileCounts> {
+  const supabase = await createClient();
+  const [showsRes, episodesRes, entriesRes, listsRes] = await Promise.all([
+    supabase
+      .from("show_progress")
+      .select("media_id", { count: "exact", head: true })
+      .eq("user_id", userId),
+    supabase
+      .from("watched_entries")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .not("episode_id", "is", null),
+    supabase
+      .from("watched_entries")
+      .select("runtime_minutes")
+      .eq("user_id", userId),
+    supabase
+      .from("custom_lists")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("is_public", true),
+  ]);
+
+  const totalMinutes = (entriesRes.data ?? []).reduce(
+    (sum, r) => sum + ((r.runtime_minutes as number | null) ?? 0),
+    0,
+  );
+
+  return {
+    shows: showsRes.count ?? 0,
+    episodes: episodesRes.count ?? 0,
+    hours: Math.floor(totalMinutes / 60),
+    lists: listsRes.count ?? 0,
+  };
+}
+
+export type ActivityItem = {
+  watchedAt: string;
+  mediaId: string;
+  title: string;
+  posterPath: string | null;
+  tmdbType: "movie" | "tv";
+  tmdbId: string | null;
+  episode: { seasonNumber: number; episodeNumber: number; name: string | null } | null;
+};
+
+/**
+ * Most recent watched entries for a user's public profile timeline.
+ */
+export async function getRecentActivity(
+  userId: string,
+  limit = 15,
+): Promise<ActivityItem[]> {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("watched_entries")
+    .select(
+      `watched_at, media_id, episode_id,
+       media:media_id ( id, title, poster_path, type ),
+       episode:episode_id ( episode_number, name,
+         seasons ( season_number ) )`,
+    )
+    .eq("user_id", userId)
+    .order("watched_at", { ascending: false })
+    .limit(limit);
+
+  if (!data) return [];
+  const mediaIds = [...new Set(data.map((r) => r.media_id as string))];
+  const tmdbMap = await getTmdbIdMap(mediaIds);
+
+  return data.map((r) => {
+    const media = r.media as {
+      title: string;
+      poster_path: string | null;
+      type: "movie" | "tv";
+    };
+    const ep = r.episode as {
+      episode_number: number;
+      name: string | null;
+      seasons: { season_number: number };
+    } | null;
+
+    return {
+      watchedAt: r.watched_at as string,
+      mediaId: r.media_id as string,
+      title: media.title,
+      posterPath: media.poster_path,
+      tmdbType: media.type,
+      tmdbId: tmdbMap.get(r.media_id as string) ?? null,
+      episode: ep
+        ? {
+            seasonNumber: ep.seasons?.season_number ?? 0,
+            episodeNumber: ep.episode_number,
+            name: ep.name,
+          }
+        : null,
+    };
+  });
+}
+
+export type PublicListSummary = {
+  id: string;
+  name: string;
+  description: string | null;
+  slug: string;
+  itemCount: number;
+  coverPosters: (string | null)[];
+};
+
+/**
+ * Public custom lists for a user's profile page. Also fetches up to 4 cover
+ * posters per list (rendered as a 2×2 mosaic in the UI).
+ */
+export async function getPublicListsByUser(
+  userId: string,
+): Promise<PublicListSummary[]> {
+  const supabase = await createClient();
+  const { data: lists } = await supabase
+    .from("custom_lists")
+    .select("id, name, description, slug")
+    .eq("user_id", userId)
+    .eq("is_public", true)
+    .order("created_at", { ascending: false });
+
+  if (!lists || lists.length === 0) return [];
+
+  return Promise.all(
+    lists.map(async (list) => {
+      const listId = list.id as string;
+      const [{ count }, { data: items }] = await Promise.all([
+        supabase
+          .from("custom_list_items")
+          .select("media_id", { count: "exact", head: true })
+          .eq("list_id", listId),
+        supabase
+          .from("custom_list_items")
+          .select(`media:media_id ( poster_path )`)
+          .eq("list_id", listId)
+          .order("position", { ascending: true })
+          .limit(4),
+      ]);
+
+      return {
+        id: listId,
+        name: list.name as string,
+        description: list.description as string | null,
+        slug: list.slug as string,
+        itemCount: count ?? 0,
+        coverPosters: (items ?? []).map((i) => {
+          const m = i.media as { poster_path: string | null } | null;
+          return m?.poster_path ?? null;
+        }),
+      };
+    }),
+  );
+}
+
+export const BANNER_GRADIENTS: Record<string, string> = {
+  aurora: "linear-gradient(120deg, #3a2b5f, #1f6f8b)",
+  ember: "linear-gradient(120deg, #5a1d10, #c2452a)",
+  forest: "linear-gradient(120deg, #14361f, #2f7d4f)",
+  rose: "linear-gradient(120deg, #5a1438, #b03a6a)",
+  gold: "linear-gradient(120deg, #3a2f10, #b8902a)",
+  mono: "linear-gradient(120deg, #26262c, #101013)",
+};
+
+export function bannerGradient(theme: string | null | undefined): string {
+  return BANNER_GRADIENTS[theme ?? "mono"] ?? BANNER_GRADIENTS.mono;
 }
 
 // ─── Continue Watching (existing) ──────────────────────────────────────────
