@@ -418,6 +418,108 @@ export async function unrateMediaAction(
   return { ok: true };
 }
 
+// ─── Tier board actions ────────────────────────────────────────────────────
+
+export type TierKey = "S" | "A" | "B" | "C" | "D";
+
+const TIER_LABEL_COLUMN: Record<TierKey, "s_label" | "a_label" | "b_label" | "c_label" | "d_label"> = {
+  S: "s_label",
+  A: "a_label",
+  B: "b_label",
+  C: "c_label",
+  D: "d_label",
+};
+
+export async function assignTierAction(args: {
+  mediaId: string;
+  tier: TierKey;
+}): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const { error } = await supabase.from("tier_assignments").upsert(
+    {
+      user_id: user.id,
+      media_id: args.mediaId,
+      tier: args.tier,
+    },
+    { onConflict: "user_id,media_id" },
+  );
+
+  if (error) return { error: error.message };
+  revalidatePath("/tiers");
+  return { ok: true };
+}
+
+export async function removeTierAction(
+  mediaId: string,
+): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const { error } = await supabase
+    .from("tier_assignments")
+    .delete()
+    .eq("user_id", user.id)
+    .eq("media_id", mediaId);
+
+  if (error) return { error: error.message };
+  revalidatePath("/tiers");
+  return { ok: true };
+}
+
+export async function renameTierLabelAction(args: {
+  tier: TierKey;
+  label: string;
+}): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const trimmed = args.label.trim().slice(0, 3);
+  if (!trimmed) return { error: "empty-label" };
+
+  // Ensure a labels row exists (schema check enforces max 3 chars per column).
+  await supabase
+    .from("tier_labels")
+    .upsert({ user_id: user.id }, { onConflict: "user_id" });
+
+  const column = TIER_LABEL_COLUMN[args.tier];
+  const { error } = await supabase
+    .from("tier_labels")
+    .update({ [column]: trimmed, updated_at: new Date().toISOString() })
+    .eq("user_id", user.id);
+
+  if (error) return { error: error.message };
+  revalidatePath("/tiers");
+  return { ok: true };
+}
+
+export async function resetTierBoardAction(): Promise<TrackingResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "not-signed-in" };
+
+  const { error } = await supabase
+    .from("tier_assignments")
+    .delete()
+    .eq("user_id", user.id);
+
+  if (error) return { error: error.message };
+  revalidatePath("/tiers");
+  return { ok: true };
+}
+
 // ─── Reads (for server components) ─────────────────────────────────────────
 
 export type ShowProgress = {

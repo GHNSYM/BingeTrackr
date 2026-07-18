@@ -490,6 +490,143 @@ export async function getStats(overrideUserId?: string): Promise<Stats> {
   };
 }
 
+// ─── Tier board ────────────────────────────────────────────────────────────
+
+export type TierKey = "S" | "A" | "B" | "C" | "D";
+
+export type TierBoardItem = {
+  mediaId: string;
+  title: string;
+  posterPath: string | null;
+  tmdbId: string | null;
+  tmdbType: "movie" | "tv";
+  releaseYear: number | null;
+  /** null → in the unranked tray. */
+  tier: TierKey | null;
+};
+
+export type TierBoardData = {
+  items: TierBoardItem[];
+  labels: Record<TierKey, string>;
+};
+
+/**
+ * All the data the /tiers page needs. Unranked pool = user's watched movies
+ * plus every show they've made progress on, minus anything already on the
+ * board. One flat items[] list on the client (each with an optional tier)
+ * is simpler than two arrays for drag-source vs drop-target logic.
+ */
+export async function getTierBoard(): Promise<TierBoardData> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const empty: TierBoardData = {
+    items: [],
+    labels: { S: "S", A: "A", B: "B", C: "C", D: "D" },
+  };
+  if (!user) return empty;
+
+  const [assignmentsRes, labelsRes, watchedMoviesRes, progressRes] =
+    await Promise.all([
+      supabase
+        .from("tier_assignments")
+        .select(
+          `media_id, tier,
+           media:media_id ( id, title, poster_path, type, release_year )`,
+        )
+        .eq("user_id", user.id),
+      supabase
+        .from("tier_labels")
+        .select("s_label, a_label, b_label, c_label, d_label")
+        .eq("user_id", user.id)
+        .maybeSingle(),
+      supabase
+        .from("watched_entries")
+        .select(
+          `media_id,
+           media:media_id ( id, title, poster_path, type, release_year )`,
+        )
+        .eq("user_id", user.id)
+        .is("episode_id", null),
+      supabase
+        .from("show_progress")
+        .select(
+          `media_id,
+           media:media_id ( id, title, poster_path, type, release_year )`,
+        )
+        .eq("user_id", user.id),
+    ]);
+
+  type MediaRow = {
+    id: string;
+    title: string;
+    poster_path: string | null;
+    type: "movie" | "tv";
+    release_year: number | null;
+  };
+
+  const assignedIds = new Set<string>();
+  const items: TierBoardItem[] = [];
+
+  // Assigned first so their order is stable.
+  for (const row of assignmentsRes.data ?? []) {
+    const m = row.media as MediaRow | null;
+    if (!m) continue;
+    assignedIds.add(row.media_id as string);
+    items.push({
+      mediaId: row.media_id as string,
+      title: m.title,
+      posterPath: m.poster_path,
+      tmdbId: null, // filled in after batched lookup below
+      tmdbType: m.type,
+      releaseYear: m.release_year,
+      tier: row.tier as TierKey,
+    });
+  }
+
+  // Unranked pool — dedup by media_id, excluding already-assigned.
+  const seen = new Set<string>(assignedIds);
+  const unrankedCandidates = [
+    ...(watchedMoviesRes.data ?? []),
+    ...(progressRes.data ?? []),
+  ];
+  for (const row of unrankedCandidates) {
+    const id = row.media_id as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const m = row.media as MediaRow | null;
+    if (!m) continue;
+    items.push({
+      mediaId: id,
+      title: m.title,
+      posterPath: m.poster_path,
+      tmdbId: null,
+      tmdbType: m.type,
+      releaseYear: m.release_year,
+      tier: null,
+    });
+  }
+
+  // Fill tmdb ids in one batched lookup.
+  const tmdbMap = await getTmdbIdMap(items.map((i) => i.mediaId));
+  for (const item of items) {
+    item.tmdbId = tmdbMap.get(item.mediaId) ?? null;
+  }
+
+  const l = labelsRes.data;
+  const labels: Record<TierKey, string> = {
+    S: (l?.s_label as string | undefined) ?? "S",
+    A: (l?.a_label as string | undefined) ?? "A",
+    B: (l?.b_label as string | undefined) ?? "B",
+    C: (l?.c_label as string | undefined) ?? "C",
+    D: (l?.d_label as string | undefined) ?? "D",
+  };
+
+  return { items, labels };
+}
+
 // ─── Public profile helpers ────────────────────────────────────────────────
 
 export async function getProfileByUsername(

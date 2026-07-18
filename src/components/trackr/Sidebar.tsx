@@ -16,7 +16,7 @@ const PRIMARY_NAV: NavItem[] = [
   { href: "/home", label: "Home", icon: Home },
   { href: "/discover", label: "Discover", icon: Compass },
   { href: "/library", label: "Library", icon: LibraryBig },
-  { href: "/tiers", label: "Tiers", icon: Layers, disabled: true },
+  { href: "/tiers", label: "Tiers", icon: Layers },
   { href: "/stats", label: "Stats", icon: BarChart3 },
 ];
 
