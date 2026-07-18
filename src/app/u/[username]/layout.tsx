@@ -1,35 +1,14 @@
-import { AppShell } from "@/components/trackr/AppShell";
-import { getUserAndProfile } from "@/lib/auth/require-user";
-import { PLACEHOLDER_USERNAME_REGEX } from "@/types/db";
+import { ConditionalAppShell } from "@/components/trackr/ConditionalAppShell";
 
 /**
- * /u/[username] is a PUBLIC route — anonymous visitors can view public
- * profiles. But when a signed-in user is looking at a profile (their own
- * or someone else's), we don't want them to lose the app navigation. So
- * we conditionally wrap in the AppShell.
- *
- * Anonymous visitors get no shell — the profile page's own CTA row
- * handles the "sign up to track" nudge.
+ * /u/[username] is a public route. Signed-in visitors keep their app nav;
+ * anonymous strangers get the bare page (they need the sign-up CTA the
+ * profile itself renders).
  */
-export default async function UsernameLayout({
+export default function UsernameLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const { profile } = await getUserAndProfile();
-
-  // Signed-in with a real (non-placeholder) handle → shell.
-  if (profile && !PLACEHOLDER_USERNAME_REGEX.test(profile.username)) {
-    return (
-      <AppShell
-        username={profile.username}
-        displayName={profile.display_name}
-      >
-        {children}
-      </AppShell>
-    );
-  }
-
-  // Anonymous or half-onboarded → bare page.
-  return <>{children}</>;
+  return <ConditionalAppShell>{children}</ConditionalAppShell>;
 }
