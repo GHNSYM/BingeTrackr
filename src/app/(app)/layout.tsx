@@ -1,15 +1,22 @@
+import { AppShell } from "@/components/trackr/AppShell";
 import { requireOnboardedUser } from "@/lib/auth/require-user";
 
 /**
- * Auth guard for every authed route under (app)/.
- * Redirects to /login if not signed in, or /onboarding if the profile still
- * has the placeholder username from the auto-profile trigger.
+ * Auth guard + app shell. Every authed route under (app)/ automatically
+ * gets the sidebar (desktop) / bottom tab bar (mobile) chrome.
  */
 export default async function AppLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  await requireOnboardedUser();
-  return <>{children}</>;
+  const { profile } = await requireOnboardedUser();
+  return (
+    <AppShell
+      username={profile.username}
+      displayName={profile.display_name}
+    >
+      {children}
+    </AppShell>
+  );
 }

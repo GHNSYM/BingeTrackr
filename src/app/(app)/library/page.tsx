@@ -32,18 +32,13 @@ export default async function LibraryPage({
 
   return (
     <main className="flex-1 px-4 sm:px-6 py-6 sm:py-10 max-w-6xl mx-auto w-full flex flex-col gap-8">
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
-            Everything you&apos;ve tracked
-          </p>
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight leading-tight">
-            Library
-          </h1>
-        </div>
-        <Button asChild variant="outline" size="sm">
-          <Link href="/discover">Discover</Link>
-        </Button>
+      <header className="flex flex-col gap-1">
+        <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
+          Everything you&apos;ve tracked
+        </p>
+        <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight leading-tight">
+          Library
+        </h1>
       </header>
 
       <LibraryTabs activeTab={activeTab} counts={counts} />

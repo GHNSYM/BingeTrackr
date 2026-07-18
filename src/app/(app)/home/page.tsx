@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ContinueWatchingCard } from "@/components/trackr/ContinueWatchingCard";
-import { signOutAction } from "@/lib/auth/actions";
 import { requireOnboardedUser } from "@/lib/auth/require-user";
 import { getContinueWatching } from "@/lib/tracking/queries";
 
@@ -12,26 +11,13 @@ export default async function HomePage() {
   return (
     <main className="flex-1 px-4 sm:px-6 py-6 sm:py-10 max-w-3xl mx-auto w-full flex flex-col gap-10">
       {/* Header */}
-      <header className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
-            Home
-          </p>
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight leading-tight">
-            Hey, @{profile.username}.
-          </h1>
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          <Button asChild variant="outline" size="sm">
-            <Link href="/library">Library</Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link href="/discover">Discover</Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link href="/stats">Stats</Link>
-          </Button>
-        </div>
+      <header className="flex flex-col gap-1">
+        <p className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
+          Home
+        </p>
+        <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight leading-tight">
+          Hey, @{profile.username}.
+        </h1>
       </header>
 
       {/* Continue watching */}
@@ -58,22 +44,6 @@ export default async function HomePage() {
           <EmptyContinueWatching />
         )}
       </section>
-
-      {/* Sign out — tucked at the bottom so it's out of the way */}
-      <footer className="mt-auto pt-8 flex justify-between items-center gap-4 border-t border-border">
-        <Link
-          href={`/u/${profile.username}`}
-          className="text-xs text-meta hover:text-foreground transition"
-        >
-          @{profile.username} · {profile.is_public ? "Public" : "Private"} ·{" "}
-          {profile.region ?? "IN"}
-        </Link>
-        <form action={signOutAction}>
-          <Button type="submit" variant="ghost" size="sm">
-            Log out
-          </Button>
-        </form>
-      </footer>
     </main>
   );
 }
