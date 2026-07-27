@@ -47,6 +47,7 @@ export function MobileTabBar({ username }: Props) {
             <li key={tab.href} className="flex-1">
               <Link
                 href={tab.href}
+                prefetch
                 className="flex flex-col items-center justify-center gap-1 py-2 outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
                 aria-current={active ? "page" : undefined}
               >

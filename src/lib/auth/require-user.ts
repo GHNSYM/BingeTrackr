@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile } from "@/types/db";
@@ -17,11 +18,15 @@ export async function requireUser() {
 
 /**
  * Get user + profile in one shot. Returns nulls if not signed in.
+ *
+ * Wrapped in React's cache() so multiple callers within the same render
+ * pass — e.g. (app)/layout.tsx and the page component inside it — share
+ * a single Supabase round-trip instead of hitting the DB twice.
  */
-export async function getUserAndProfile(): Promise<{
+export const getUserAndProfile = cache(async (): Promise<{
   user: { id: string; email?: string } | null;
   profile: Profile | null;
-}> {
+}> => {
   const supabase = await createClient();
   const {
     data: { user },
@@ -35,7 +40,7 @@ export async function getUserAndProfile(): Promise<{
     .maybeSingle<Profile>();
 
   return { user, profile };
-}
+});
 
 /**
  * Redirect to /login if not signed in, or /onboarding if the profile
