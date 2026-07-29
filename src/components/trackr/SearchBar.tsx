@@ -4,6 +4,8 @@ type SearchBarProps = {
   initialQuery?: string;
   placeholder?: string;
   action?: string;
+  /** Carried through as a hidden field so searching keeps the active filter. */
+  typeFilter?: string;
 };
 
 /**
@@ -15,6 +17,7 @@ export function SearchBar({
   initialQuery = "",
   placeholder = "Search movies, shows, anime…",
   action = "/discover",
+  typeFilter,
 }: SearchBarProps) {
   return (
     <form
@@ -23,6 +26,9 @@ export function SearchBar({
       className="relative flex items-center w-full"
       role="search"
     >
+      {typeFilter && typeFilter !== "all" && (
+        <input type="hidden" name="type" value={typeFilter} />
+      )}
       <Search
         aria-hidden
         className="absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none"

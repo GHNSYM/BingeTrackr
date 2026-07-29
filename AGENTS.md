@@ -31,9 +31,24 @@ Mobile-first web app for tracking movies, TV shows, and anime. Indian audience. 
 - Fonts: **Manrope** (display) + **Inter** (body) via `next/font`.
 - Motion: `.animate-pop` for the signature Mark-Watched check, `.skeleton` shimmer for loads. Both respect `prefers-reduced-motion`. Glass surfaces drop to flat on `prefers-reduced-transparency` (perf mitigation for cheap Android — a real concern for the Indian audience).
 
-## Home screen: Continue Watching goes FIRST
+## Roadmap
 
-The design handoff put the hero carousel first. We overrode that. Continue Watching sits above the fold; the hero carousel comes second. Founding-feature respect.
+`DESIGN_ROADMAP.md` holds the plan for Home and Discover, and the decision
+behind it: **Home is "your stuff" + one shallow discovery hook; Discover is the
+browse engine.** Don't add browse carousels to Home — read that doc first.
+
+## Home screen order: hero carousel, then Continue Watching
+
+**This reverses an earlier decision — do not "fix" it back.** We originally
+overrode the design handoff to put Continue Watching first. As of 2026-07-30 the
+handoff's order stands: the hero coverflow carousel is the top of Home, then
+Continue Watching, then the "your stuff" rails. The `Hey, @username` greeting is
+gone — the carousel owns the top of the page.
+
+Continue Watching is still the founding feature and still above the fold on
+desktop. It keeps the first *section* slot, and the hero deliberately carries
+only trending titles — Home does not grow more browse carousels. See
+`DESIGN_ROADMAP.md`.
 
 ## Design handoff
 
@@ -72,6 +87,7 @@ The full schema lives in `supabase/migrations/` — read those files as source o
 - **Separate `show_progress` table**, one row per (user, show). Don't derive resume-point from `MAX(watched_at)` — users need explicit control (they jump around, mark random eps).
 - **Internal `media.id`** (uuid) with `media_external_ids` mapping to TMDB / AniList / IMDb / MAL. Never use TMDB IDs as primary keys — anime reconciliation depends on this indirection.
 - **Cache TMDB lazily** — only insert `media` rows for titles users have touched. Do NOT bulk-import TMDB's catalog (violates ToS + kills the free tier).
+- **PostgREST silently truncates reads at 1000 rows** (`db-max-rows`). It does not error — you just get 1000 rows and no signal there were more. This produced wrong stats (a user with 1490 watched entries had hours and per-show counts computed from an arbitrary 1000 of them). Any query that can return more than a few hundred rows MUST go through `fetchAllRows` in `src/lib/supabase/paginate.ts`, with a stable `.order()` on a unique column. Note `count: "exact", head: true` is unaffected — PostgREST computes counts server-side.
 - **RLS pattern:** owner always reads/writes own; user-content tables (watched, show_progress, ratings, tiers, public custom_lists) are readable by anyone if the user's profile `is_public`. **Watchlist is owner-only-read even on public profiles** — deliberate privacy call.
 - **Auto-profile trigger** on `auth.users` insert creates a `profiles` row with a placeholder `username` (e.g. `useraf12b8c9`). Onboarding lets the user claim a real handle.
 
@@ -80,6 +96,13 @@ The full schema lives in `supabase/migrations/` — read those files as source o
 See `supabase/README.md` for apply instructions. First migration goes via the SQL editor for speed; second onwards should go through the Supabase CLI so schema stays version-controlled.
 
 Never edit an applied migration file — write a new one that reverses/extends it.
+
+## Free-tier budget
+
+Deferred performance work lives in `OPTIMIZATIONS.md` — ranked, with measured
+baselines. Read it before "optimizing" anything, and add to it rather than
+acting on a hunch. The governing rule there: **feature above usage** — never cut
+a feature to save a request; fix the query instead.
 
 ## Working style
 

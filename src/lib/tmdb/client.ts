@@ -32,6 +32,14 @@ export type TmdbMediaSearchResult = TmdbSearchResult & {
   media_type: TmdbMediaType;
 };
 
+/** TMDB's franchise grouping — "The Fast and the Furious Collection" etc. */
+export type TmdbCollectionRef = {
+  id: number;
+  name: string;
+  poster_path: string | null;
+  backdrop_path: string | null;
+};
+
 export type TmdbMovieDetails = {
   id: number;
   title: string;
@@ -44,6 +52,16 @@ export type TmdbMovieDetails = {
   genres: { id: number; name: string }[];
   vote_average: number;
   original_language: string;
+  belongs_to_collection: TmdbCollectionRef | null;
+};
+
+export type TmdbCollectionDetails = {
+  id: number;
+  name: string;
+  overview: string;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  parts: TmdbSearchResult[];
 };
 
 export type TmdbTvSeasonSummary = {
@@ -126,40 +144,94 @@ async function tmdb<T>(
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-export async function searchMulti(query: string): Promise<TmdbMediaSearchResult[]> {
-  const data = await tmdb<{ results: TmdbSearchResult[] }>(
+/** TMDB serves 20 results per page on both /search and /trending. */
+export const TMDB_PAGE_SIZE = 20;
+
+/**
+ * Fetch `pages` pages of a paginated list endpoint in parallel and concatenate.
+ * Out-of-range pages come back with an empty `results` array (TMDB doesn't
+ * error until page 500), so short lists just yield fewer items. One page
+ * failing doesn't sink the rest.
+ */
+async function tmdbPaged(
+  path: string,
+  params: Record<string, string | number | undefined>,
+  pages: number,
+  options?: { revalidateSeconds?: number },
+): Promise<TmdbSearchResult[]> {
+  const responses = await Promise.all(
+    Array.from({ length: Math.max(1, pages) }, (_, i) =>
+      tmdb<{ results: TmdbSearchResult[] }>(
+        path,
+        { ...params, page: i + 1 },
+        options,
+      ).catch(() => ({ results: [] as TmdbSearchResult[] })),
+    ),
+  );
+  return responses.flatMap((r) => r.results ?? []);
+}
+
+/** Same title can appear on more than one page as the list shifts under us. */
+function dedupeById(
+  results: TmdbMediaSearchResult[],
+): TmdbMediaSearchResult[] {
+  const seen = new Set<string>();
+  return results.filter((r) => {
+    const key = `${r.media_type}-${r.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export async function searchMulti(
+  query: string,
+  pages = 1,
+): Promise<TmdbMediaSearchResult[]> {
+  const results = await tmdbPaged(
     "/search/multi",
     { query, include_adult: "false" },
+    pages,
     // Search doesn't benefit from caching much; keep short.
     { revalidateSeconds: 60 },
   );
   // Drop person results — this is a media tracker.
-  return data.results.filter(
-    (r): r is TmdbMediaSearchResult =>
-      r.media_type === "movie" || r.media_type === "tv",
+  return dedupeById(
+    results.filter(
+      (r): r is TmdbMediaSearchResult =>
+        r.media_type === "movie" || r.media_type === "tv",
+    ),
   );
 }
 
+export type TrendingBuckets = {
+  movies: TmdbMediaSearchResult[];
+  shows: TmdbMediaSearchResult[];
+};
+
+/**
+ * Trending movies and shows, kept in separate buckets and in TMDB's own
+ * trending order. Callers used to get one merged array re-sorted by
+ * `vote_average`, which put obscure high-scoring titles above genuinely
+ * trending ones — worse the more pages you pull.
+ */
 export async function trendingInRegion(
   region: string = "IN",
   window: "day" | "week" = "week",
-): Promise<TmdbMediaSearchResult[]> {
+  pages = 1,
+): Promise<TrendingBuckets> {
   // TMDB /trending doesn't accept region — filter by original_language 'hi'
   // + surrounding trending signal by pulling both movie + tv day trending.
   const [movies, tv] = await Promise.all([
-    tmdb<{ results: TmdbSearchResult[] }>(`/trending/movie/${window}`, {
-      region,
-    }),
-    tmdb<{ results: TmdbSearchResult[] }>(`/trending/tv/${window}`, {
-      region,
-    }),
+    tmdbPaged(`/trending/movie/${window}`, { region }, pages),
+    tmdbPaged(`/trending/tv/${window}`, { region }, pages),
   ]);
-  return [
-    ...movies.results.map((r) => ({ ...r, media_type: "movie" as const })),
-    ...tv.results.map((r) => ({ ...r, media_type: "tv" as const })),
-  ].sort(
-    (a, b) => (b.vote_average ?? 0) - (a.vote_average ?? 0),
-  );
+  return {
+    movies: dedupeById(
+      movies.map((r) => ({ ...r, media_type: "movie" as const })),
+    ),
+    shows: dedupeById(tv.map((r) => ({ ...r, media_type: "tv" as const }))),
+  };
 }
 
 export function getMovie(tmdbId: number | string) {
@@ -172,6 +244,40 @@ export function getTv(tmdbId: number | string) {
   return tmdb<TmdbTvDetails>(`/tv/${tmdbId}`, undefined, {
     revalidateSeconds: 60 * 60 * 24,
   });
+}
+
+/**
+ * All entries in a franchise, in release order. This is what makes
+ * "more Fast & Furious" possible — TMDB models it explicitly, so we don't have
+ * to infer a universe from genres.
+ */
+export function getCollection(collectionId: number | string) {
+  return tmdb<TmdbCollectionDetails>(`/collection/${collectionId}`, undefined, {
+    revalidateSeconds: 60 * 60 * 24 * 7, // 7d — franchises don't change often
+  });
+}
+
+/**
+ * TMDB's editorial recommendations, which lean on what people actually watch
+ * together. `/similar` is the genre-and-keyword fallback when that's thin.
+ */
+export function getRecommendations(
+  type: TmdbMediaType,
+  tmdbId: number | string,
+) {
+  return tmdb<{ results: TmdbSearchResult[] }>(
+    `/${type}/${tmdbId}/recommendations`,
+    undefined,
+    { revalidateSeconds: 60 * 60 * 24 },
+  );
+}
+
+export function getSimilar(type: TmdbMediaType, tmdbId: number | string) {
+  return tmdb<{ results: TmdbSearchResult[] }>(
+    `/${type}/${tmdbId}/similar`,
+    undefined,
+    { revalidateSeconds: 60 * 60 * 24 },
+  );
 }
 
 export function getWatchProviders(

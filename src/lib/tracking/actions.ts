@@ -2,11 +2,38 @@
 
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { fetchAllRows } from "@/lib/supabase/paginate";
 import { createClient } from "@/lib/supabase/server";
 import { getTv } from "@/lib/tmdb/client";
 import { ensureSeasonCached } from "@/lib/tmdb/seasons";
 
 export type TrackingResult = { ok: true } | { error: string };
+
+/**
+ * A title is either "to watch" or "watched" — never both. Finishing something
+ * therefore evicts it from the watchlist.
+ *
+ * Deliberately NOT called when a show merely moves to `watching`: a part-way
+ * series legitimately stays on the watchlist, since the user still intends to
+ * watch the rest of it.
+ *
+ * Best-effort. The watchlist is a convenience list; failing to prune it must
+ * never fail the watch itself.
+ */
+async function dropFromWatchlist(
+  supabase: SupabaseClient,
+  userId: string,
+  mediaId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from("watchlist_entries")
+    .delete()
+    .eq("user_id", userId)
+    .eq("media_id", mediaId);
+  if (error) {
+    console.error("dropFromWatchlist failed:", error.message);
+  }
+}
 
 // ─── Movie actions ─────────────────────────────────────────────────────────
 
@@ -47,8 +74,12 @@ export async function markMovieWatchedAction(
     if (error) return { error: error.message };
   }
 
-  revalidatePath("/title/movie/[id]", "layout");
+  // Watched now — it's no longer something to watch.
+  await dropFromWatchlist(supabase, user.id, mediaId);
+
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
+  revalidatePath("/library");
   return { ok: true };
 }
 
@@ -69,7 +100,7 @@ export async function unmarkMovieWatchedAction(
     .is("episode_id", null);
 
   if (error) return { error: error.message };
-  revalidatePath("/title/movie/[id]", "layout");
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
   return { ok: true };
 }
@@ -140,8 +171,15 @@ export async function markEpisodeWatchedAction(args: {
 
   if (progressError) return { error: progressError.message };
 
-  revalidatePath("/title/tv/[id]", "layout");
+  // Only if this landed on (or stayed) completed — a show still in progress
+  // keeps its watchlist entry.
+  if (status === "completed") {
+    await dropFromWatchlist(supabase, user.id, args.mediaId);
+  }
+
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
+  revalidatePath("/library");
   return { ok: true };
 }
 
@@ -163,7 +201,7 @@ export async function unmarkEpisodeAction(args: {
     .eq("episode_id", args.episodeId);
 
   if (error) return { error: error.message };
-  revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
   return { ok: true };
 }
@@ -253,8 +291,13 @@ export async function markSeasonWatchedAction(args: {
 
   if (progressError) return { error: progressError.message };
 
-  revalidatePath("/title/tv/[id]", "layout");
+  if (status === "completed") {
+    await dropFromWatchlist(supabase, user.id, args.mediaId);
+  }
+
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
+  revalidatePath("/library");
   return { ok: true };
 }
 
@@ -291,7 +334,7 @@ export async function unmarkSeasonWatchedAction(args: {
 
   if (error) return { error: error.message };
 
-  revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
   return { ok: true };
 }
@@ -332,10 +375,14 @@ export async function setShowStatusAction(args: {
     } catch (err) {
       console.error("auto mark-all on completed failed:", err);
     }
+    // Completed leaves the watchlist. `watching` deliberately does not — a
+    // half-finished series is still something the user means to watch.
+    await dropFromWatchlist(supabase, user.id, args.mediaId);
   }
 
-  revalidatePath("/title/tv/[id]", "layout");
+  revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
+  revalidatePath("/library");
   return { ok: true };
 }
 
@@ -393,22 +440,38 @@ async function markEveryEpisodeWatched(
     ]),
   );
 
-  const { data: episodes } = await supabase
-    .from("episodes")
-    .select("id, episode_number, runtime_minutes, season_id")
-    .in("season_id", seasonIds);
-  if (!episodes || episodes.length === 0) return;
+  // Paginated — a 1000+ episode show would otherwise be silently truncated
+  // here, so "mark completed" would only ever mark the first 1000.
+  type EpisodeRow = {
+    id: string;
+    episode_number: number;
+    runtime_minutes: number | null;
+    season_id: string;
+  };
+  const episodes = await fetchAllRows<EpisodeRow>((from, to) =>
+    supabase
+      .from("episodes")
+      .select("id, episode_number, runtime_minutes, season_id")
+      .in("season_id", seasonIds)
+      .order("id", { ascending: true })
+      .range(from, to)
+      .overrideTypes<EpisodeRow[]>(),
+  );
+  if (episodes.length === 0) return;
 
   // 3) Find which the user hasn't already marked.
-  const episodeIds = episodes.map((e) => e.id as string);
-  const { data: already } = await supabase
-    .from("watched_entries")
-    .select("episode_id")
-    .eq("user_id", userId)
-    .in("episode_id", episodeIds);
-  const alreadySet = new Set(
-    (already ?? []).map((r) => r.episode_id as string),
+  const episodeIds = episodes.map((e) => e.id);
+  const already = await fetchAllRows<{ episode_id: string }>((from, to) =>
+    supabase
+      .from("watched_entries")
+      .select("episode_id")
+      .eq("user_id", userId)
+      .in("episode_id", episodeIds)
+      .order("episode_id", { ascending: true })
+      .range(from, to)
+      .overrideTypes<{ episode_id: string }[]>(),
   );
+  const alreadySet = new Set(already.map((r) => r.episode_id));
 
   const toInsert = episodes
     .filter((e) => !alreadySet.has(e.id as string))

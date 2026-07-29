@@ -168,6 +168,199 @@
 .text-body   { color: var(--body); }
 .text-meta   { color: var(--meta); }
 
+/* ─────────────────────────────────────────────────────────────
+   Poster grid — fluid columns driven by the size toggle.
+
+   Column count comes from `data-poster-size` on an ancestor (set by
+   PosterSizeShell). Cards flex to fill the column, so a 360px Galaxy S24 and
+   a 430px iPhone 15 Plus both get the same count — the old fixed-180px
+   `auto-fill` track silently dropped narrow phones to a single column.
+   ───────────────────────────────────────────────────────────── */
+
+.poster-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--poster-cols, 3), minmax(0, 1fr));
+  gap: var(--poster-gap-y, 1.25rem) var(--poster-gap-x, 0.75rem);
+}
+
+/* Phones */
+[data-poster-size="sm"] { --poster-cols: 4; --poster-gap-x: 0.5rem;  --poster-gap-y: 1rem; }
+[data-poster-size="md"] { --poster-cols: 3; --poster-gap-x: 0.75rem; --poster-gap-y: 1.25rem; }
+[data-poster-size="lg"] { --poster-cols: 2; --poster-gap-x: 1rem;    --poster-gap-y: 1.5rem; }
+
+/* Large phones / tablets — bridges the gap so 7 columns never lands on a
+   768px tablet, while keeping the phone and desktop counts as specified. */
+@media (min-width: 640px) {
+  [data-poster-size="sm"] { --poster-cols: 5; }
+  [data-poster-size="md"] { --poster-cols: 4; }
+  [data-poster-size="lg"] { --poster-cols: 3; }
+}
+
+/* Desktop */
+@media (min-width: 1024px) {
+  [data-poster-size="sm"] { --poster-cols: 7; --poster-gap-x: 0.75rem; --poster-gap-y: 1.25rem; }
+  [data-poster-size="md"] { --poster-cols: 6; --poster-gap-x: 1rem;    --poster-gap-y: 1.5rem; }
+  [data-poster-size="lg"] { --poster-cols: 5; --poster-gap-x: 1.25rem; --poster-gap-y: 1.75rem; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Continue Watching rail — two fixed rows, overflow scrolls sideways.
+
+   `grid-auto-flow: column` fills top-to-bottom then starts a new column, so
+   cards read 1,2 / 3,4 / 5,6 … left to right. Rows are `auto`, so a rail with
+   a single card doesn't reserve a phantom second row.
+   ───────────────────────────────────────────────────────────── */
+
+.cw-rail {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(2, auto);
+  grid-auto-columns: var(--cw-card-w, 320px);
+  gap: 0.75rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  /* Breathing room so the scrollbar never overlaps card shadows. */
+  padding-bottom: 0.5rem;
+}
+
+.cw-rail > * {
+  scroll-snap-align: start;
+}
+
+/* One card plus a peek of the next, so the rail reads as scrollable. */
+@media (max-width: 639px) {
+  .cw-rail { --cw-card-w: 78vw; }
+}
+
+/* Hero coverflow stack — card size drives the container height, so the two
+   stay in sync when the breakpoint changes. */
+.hero-stack {
+  --hero-w: 196px;
+  --hero-h: 288px;
+  height: 312px;
+}
+@media (min-width: 640px) {
+  .hero-stack {
+    --hero-w: 224px;
+    --hero-h: 330px;
+    height: 356px;
+  }
+}
+
+/* Desktop puts the details column beside the stack, so the stack needs a
+   bounded width instead of filling the row — the cards are absolutely
+   positioned and would otherwise overlap the text.
+
+   Footprint math: a side card shifts translateX(±62%) of its own width, then
+   scales to 0.84. So span = 2 × (0.62w + 0.42w) ≈ 2.08w. A 224px card needs
+   ~466px; a 196px card needs ~408px.
+
+   At 1024-1279px the 236px sidebar leaves only ~740px for the row, so the card
+   drops back to its mobile size to keep the details column usable. Full size
+   returns at 1280px. Shrinking the card also buys back more vertical space,
+   which is the point of the two-column layout. */
+@media (min-width: 1024px) {
+  .hero-stack {
+    --hero-w: 196px;
+    --hero-h: 288px;
+    height: 312px;
+    width: 420px;
+    flex-shrink: 0;
+  }
+}
+@media (min-width: 1280px) {
+  .hero-stack {
+    --hero-w: 224px;
+    --hero-h: 330px;
+    height: 356px;
+    width: 480px;
+  }
+}
+
+/* Card motion. Slow and soft on purpose — the ease-out curve spends most of
+   the 0.9s decelerating, so cards drift into place rather than snap.
+   Transitioning only transform/opacity/filter keeps it on the compositor. */
+.hero-card {
+  border-radius: 24px;
+  transition:
+    transform 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.9s ease;
+  will-change: transform, opacity;
+}
+
+/* The wash fades far slower than the cards move, so the colour behind the
+   stack drifts instead of flickering between slides. Must stay under the 4s
+   dwell time or it would never finish. */
+.hero-wash {
+  transition: opacity 2.2s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-card,
+  .hero-wash {
+    transition: none !important;
+  }
+}
+
+/* Single-row poster rail — Home's "your stuff" sections. Same PosterCard as
+   the grids, so it picks up hover actions and the size preference; only the
+   container differs. Width tracks `data-poster-size` so Home stays consistent
+   with the toggle set on Discover/Library. */
+.poster-rail {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--poster-rail-w, 150px);
+  gap: 0.75rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  padding-bottom: 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.poster-rail > * { scroll-snap-align: start; }
+.poster-rail::-webkit-scrollbar { height: 8px; }
+.poster-rail::-webkit-scrollbar-track { background: transparent; }
+.poster-rail::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+.poster-rail:hover::-webkit-scrollbar-thumb { background: var(--meta); }
+
+[data-poster-size="sm"] { --poster-rail-w: 108px; }
+[data-poster-size="md"] { --poster-rail-w: 132px; }
+[data-poster-size="lg"] { --poster-rail-w: 168px; }
+@media (min-width: 1024px) {
+  [data-poster-size="sm"] { --poster-rail-w: 132px; }
+  [data-poster-size="md"] { --poster-rail-w: 158px; }
+  [data-poster-size="lg"] { --poster-rail-w: 190px; }
+}
+
+/* Same cards, but wrapping instead of scrolling — Library's Watching tab shows
+   the complete list rather than the home rail's first two rows.
+   `min(100%, 300px)` collapses to a single full-width column on narrow phones
+   instead of overflowing. */
+.cw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 0.75rem;
+}
+
+/* Thin, monochrome scrollbar — the rail's only affordance on desktop. */
+.cw-rail {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.cw-rail::-webkit-scrollbar { height: 8px; }
+.cw-rail::-webkit-scrollbar-track { background: transparent; }
+.cw-rail::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+.cw-rail:hover::-webkit-scrollbar-thumb { background: var(--meta); }
+
 /* Skeleton shimmer — used for all loading states (never spinners) */
 @keyframes shimmer {
   0%   { background-position: -200% 0; }

@@ -1,7 +1,10 @@
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ContinueWatchingCard } from "@/components/trackr/ContinueWatchingCard";
-import { PosterCard } from "@/components/trackr/PosterCard";
+import { PosterSizeShell } from "@/components/trackr/PosterSizeShell";
+import { TrackablePosterGrid } from "@/components/trackr/TrackablePosterGrid";
+import { POSTER_SIZE_COOKIE, parsePosterSize } from "@/lib/poster-size";
 import {
   getContinueWatching,
   getDroppedItems,
@@ -30,6 +33,12 @@ export default async function LibraryPage({
   // Counts are cheap; always fetch them.
   const counts = await getLibraryCounts();
 
+  // Same cookie Discover reads — the preference is global.
+  const cookieStore = await cookies();
+  const posterSize = parsePosterSize(
+    cookieStore.get(POSTER_SIZE_COOKIE)?.value,
+  );
+
   return (
     <main className="flex-1 px-4 sm:px-6 py-6 sm:py-10 max-w-6xl mx-auto w-full flex flex-col gap-8">
       <header className="flex flex-col gap-1">
@@ -41,12 +50,17 @@ export default async function LibraryPage({
         </h1>
       </header>
 
-      <LibraryTabs activeTab={activeTab} counts={counts} />
-
-      {activeTab === "watching" && <WatchingTab />}
-      {activeTab === "watched" && <WatchedTab />}
-      {activeTab === "watchlist" && <WatchlistTab />}
-      {activeTab === "dropped" && <DroppedTab />}
+      <PosterSizeShell
+        initial={posterSize}
+        // Watching is a list of resume cards, not a poster grid — nothing to size.
+        showToggle={activeTab !== "watching"}
+        toolbar={<LibraryTabs activeTab={activeTab} counts={counts} />}
+      >
+        {activeTab === "watching" && <WatchingTab />}
+        {activeTab === "watched" && <WatchedTab />}
+        {activeTab === "watchlist" && <WatchlistTab />}
+        {activeTab === "dropped" && <DroppedTab />}
+      </PosterSizeShell>
     </main>
   );
 }
@@ -104,8 +118,17 @@ function LibraryTabs({
 
 // ─── Watching tab ──────────────────────────────────────────────────────────
 
+/**
+ * Library shows the complete in-progress list, so this cap only exists as a
+ * backstop: getContinueWatching runs one episode query PER show (see
+ * OPTIMIZATIONS.md #1), so an unbounded call here would be one query and a few
+ * hundred rows per show. 100 is far past a realistic number of shows on the go;
+ * the tab badge reports the true count either way.
+ */
+const WATCHING_CAP = 100;
+
 async function WatchingTab() {
-  const items = await getContinueWatching(50);
+  const items = await getContinueWatching(WATCHING_CAP);
 
   if (items.length === 0) {
     return (
@@ -118,8 +141,10 @@ async function WatchingTab() {
     );
   }
 
+  // Same card as the home rail, but wrapped into a full grid — Library is where
+  // you go to see everything, so nothing is hidden behind a horizontal scroll.
   return (
-    <div className="flex flex-col gap-3 max-w-3xl">
+    <div className="cw-grid">
       {items.map((item) => (
         <ContinueWatchingCard key={item.mediaId} item={item} />
       ))}
@@ -189,35 +214,18 @@ function LibraryPosterGrid({
   dimmed?: boolean;
 }) {
   return (
-    <div
-      className="grid gap-x-5 gap-y-6"
-      style={{ gridTemplateColumns: "repeat(auto-fill, 180px)" }}
-    >
-      {items.map((item) => (
-        <div
-          key={item.mediaId}
-          className="flex flex-col gap-2"
-          style={{ opacity: dimmed ? 0.55 : 1 }}
-        >
-          <PosterCard
-            title={item.title}
-            posterPath={item.posterPath}
-            year={item.releaseYear}
-            href={
-              item.tmdbId
-                ? `/title/${item.tmdbType}/${item.tmdbId}`
-                : undefined
-            }
-            size="md"
-          />
-          {item.meta && (
-            <p className="text-xs text-meta -mt-1" style={{ width: 180 }}>
-              {item.meta}
-            </p>
-          )}
-        </div>
-      ))}
-    </div>
+    <TrackablePosterGrid
+      items={items.map((item) => ({
+        key: item.mediaId,
+        title: item.title,
+        posterPath: item.posterPath,
+        year: item.releaseYear,
+        tmdbId: item.tmdbId,
+        tmdbType: item.tmdbType,
+        meta: item.meta,
+        dimmed,
+      }))}
+    />
   );
 }
 

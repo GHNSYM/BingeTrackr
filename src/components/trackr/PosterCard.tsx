@@ -18,6 +18,12 @@ type PosterCardProps = {
   size?: Size;
   showLabel?: boolean;
   priority?: boolean;
+  /**
+   * Fill the parent grid cell instead of the fixed SIZE_MAP width. Required in
+   * `.poster-grid`, where the column count — not the card — sets the width.
+   * `size` then only picks the TMDB image resolution to request.
+   */
+  fluid?: boolean;
 };
 
 /**
@@ -33,6 +39,7 @@ export function PosterCard({
   size = "md",
   showLabel = true,
   priority = false,
+  fluid = false,
 }: PosterCardProps) {
   const dims = SIZE_MAP[size];
   const url = posterUrl(posterPath, dims.tmdbSize);
@@ -42,24 +49,42 @@ export function PosterCard({
   const inner = (
     <>
       <div
-        className="relative overflow-hidden shrink-0 group"
+        className={
+          fluid
+            ? "relative overflow-hidden w-full group"
+            : "relative overflow-hidden shrink-0 group"
+        }
         style={{
-          width: dims.w,
-          height: dims.h,
+          ...(fluid
+            ? { aspectRatio: "2 / 3" }
+            : { width: dims.w, height: dims.h }),
           borderRadius: "var(--radius-card)",
           boxShadow: "var(--poster-shadow)",
         }}
       >
         {url ? (
-          <Image
-            src={url}
-            alt={title}
-            width={dims.w}
-            height={dims.h}
-            priority={priority}
-            className="object-cover transition-transform duration-200 group-hover:scale-[1.03]"
-            style={{ width: "100%", height: "100%" }}
-          />
+          fluid ? (
+            <Image
+              src={url}
+              alt={title}
+              fill
+              priority={priority}
+              // Widest a card gets is ~230px (2 columns on a large phone /
+              // 5 on desktop); these keep the browser off the 2x srcset.
+              sizes="(min-width: 1024px) 16vw, (min-width: 640px) 24vw, 45vw"
+              className="object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+            />
+          ) : (
+            <Image
+              src={url}
+              alt={title}
+              width={dims.w}
+              height={dims.h}
+              priority={priority}
+              className="object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+              style={{ width: "100%", height: "100%" }}
+            />
+          )
         ) : (
           <div
             className="grid place-items-center w-full h-full"
@@ -71,7 +96,9 @@ export function PosterCard({
           >
             <span
               className="font-extrabold text-white/20 tracking-tight"
-              style={{ fontSize: dims.w * 0.6 }}
+              style={{
+                fontSize: fluid ? "clamp(1.25rem, 9vw, 3.5rem)" : dims.w * 0.6,
+              }}
             >
               {letter}
             </span>
@@ -79,7 +106,10 @@ export function PosterCard({
         )}
       </div>
       {showLabel && (
-        <div className="flex flex-col gap-0.5" style={{ width: dims.w }}>
+        <div
+          className="flex flex-col gap-0.5"
+          style={fluid ? { width: "100%" } : { width: dims.w }}
+        >
           <p className="text-sm font-semibold leading-tight line-clamp-2">
             {title}
           </p>

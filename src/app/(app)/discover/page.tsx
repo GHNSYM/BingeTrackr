@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import {
   searchMulti,
   titleFromResult,
@@ -5,12 +6,24 @@ import {
   yearFromResult,
   type TmdbMediaSearchResult,
 } from "@/lib/tmdb/client";
-import { PosterCard } from "@/components/trackr/PosterCard";
+import { PosterSizeShell } from "@/components/trackr/PosterSizeShell";
 import { SearchBar } from "@/components/trackr/SearchBar";
+import { TrackablePosterGrid } from "@/components/trackr/TrackablePosterGrid";
+import { POSTER_SIZE_COOKIE, parsePosterSize } from "@/lib/poster-size";
+import {
+  getQuickTrackStates,
+  type QuickTrackState,
+} from "@/lib/tracking/queries";
 
 export const metadata = {
   title: "Discover — BingeTrackr",
 };
+
+/**
+ * TMDB pages to pull per grid (20 results each). Two gives us ~40 posters per
+ * section, enough to fill 6+ rows at every poster size.
+ */
+const DISCOVER_PAGES = 2;
 
 type SearchParams = Promise<{ q?: string; type?: string }>;
 
@@ -21,6 +34,12 @@ export default async function DiscoverPage({
 }) {
   const { q, type } = await searchParams;
   const query = q?.trim() ?? "";
+  const typeFilter = normalizeType(type);
+
+  const cookieStore = await cookies();
+  const posterSize = parsePosterSize(
+    cookieStore.get(POSTER_SIZE_COOKIE)?.value,
+  );
 
   return (
     <main className="flex-1 px-4 sm:px-6 py-6 sm:py-10 max-w-6xl mx-auto w-full">
@@ -32,16 +51,20 @@ export default async function DiscoverPage({
           {/* On desktop the topbar has search. On mobile there's no topbar,
               so we keep the input here as the entry point. */}
           <div className="md:hidden">
-            <SearchBar initialQuery={query} />
+            <SearchBar initialQuery={query} typeFilter={typeFilter} />
           </div>
-          <TypePills active={type ?? "all"} query={query} />
         </div>
 
-        {query ? (
-          <SearchResults query={query} typeFilter={type} />
-        ) : (
-          <TrendingSections />
-        )}
+        <PosterSizeShell
+          initial={posterSize}
+          toolbar={<TypePills active={typeFilter} query={query} />}
+        >
+          {query ? (
+            <SearchResults query={query} typeFilter={typeFilter} />
+          ) : (
+            <TrendingSections typeFilter={typeFilter} />
+          )}
+        </PosterSizeShell>
       </div>
     </main>
   );
@@ -49,8 +72,14 @@ export default async function DiscoverPage({
 
 // ─── Type pills ────────────────────────────────────────────────────────────
 
-function TypePills({ active, query }: { active: string; query: string }) {
-  const opts = [
+type TypeFilter = "all" | "movie" | "tv";
+
+function normalizeType(value: string | undefined): TypeFilter {
+  return value === "movie" || value === "tv" ? value : "all";
+}
+
+function TypePills({ active, query }: { active: TypeFilter; query: string }) {
+  const opts: { key: TypeFilter; label: string }[] = [
     { key: "all", label: "All" },
     { key: "movie", label: "Movies" },
     { key: "tv", label: "TV" },
@@ -93,11 +122,11 @@ async function SearchResults({
   typeFilter,
 }: {
   query: string;
-  typeFilter?: string;
+  typeFilter: TypeFilter;
 }) {
-  const raw = await searchMulti(query);
+  const raw = await searchMulti(query, DISCOVER_PAGES);
   const results = raw.filter((r) =>
-    typeFilter && typeFilter !== "all" ? r.media_type === typeFilter : true,
+    typeFilter === "all" ? true : r.media_type === typeFilter,
   );
 
   if (results.length === 0) {
@@ -109,31 +138,49 @@ async function SearchResults({
     );
   }
 
+  const trackStates = await getQuickTrackStates(
+    results.map((r) => ({ tmdbId: r.id, tmdbType: r.media_type })),
+  );
+
   return (
     <section className="flex flex-col gap-3">
       <SectionLabel>Results ({results.length})</SectionLabel>
-      <PosterGrid results={results} />
+      <PosterGrid results={results} trackStates={trackStates} />
     </section>
   );
 }
 
 // ─── Trending (default view) ───────────────────────────────────────────────
 
-async function TrendingSections() {
-  const trending = await trendingInRegion("IN", "week");
-  const movies = trending.filter((t) => t.media_type === "movie").slice(0, 10);
-  const shows = trending.filter((t) => t.media_type === "tv").slice(0, 10);
+async function TrendingSections({ typeFilter }: { typeFilter: TypeFilter }) {
+  const { movies, shows } = await trendingInRegion(
+    "IN",
+    "week",
+    DISCOVER_PAGES,
+  );
+
+  const visible = [
+    ...(typeFilter !== "tv" ? movies : []),
+    ...(typeFilter !== "movie" ? shows : []),
+  ];
+  const trackStates = await getQuickTrackStates(
+    visible.map((r) => ({ tmdbId: r.id, tmdbType: r.media_type })),
+  );
 
   return (
     <div className="flex flex-col gap-10">
-      <section className="flex flex-col gap-3">
-        <SectionLabel>Trending movies in India</SectionLabel>
-        <PosterGrid results={movies} />
-      </section>
-      <section className="flex flex-col gap-3">
-        <SectionLabel>Trending shows in India</SectionLabel>
-        <PosterGrid results={shows} />
-      </section>
+      {typeFilter !== "tv" && (
+        <section className="flex flex-col gap-3">
+          <SectionLabel>Trending movies in India</SectionLabel>
+          <PosterGrid results={movies} trackStates={trackStates} />
+        </section>
+      )}
+      {typeFilter !== "movie" && (
+        <section className="flex flex-col gap-3">
+          <SectionLabel>Trending shows in India</SectionLabel>
+          <PosterGrid results={shows} trackStates={trackStates} />
+        </section>
+      )}
     </div>
   );
 }
@@ -150,22 +197,23 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function PosterGrid({
   results,
+  trackStates,
 }: {
   results: TmdbMediaSearchResult[];
+  trackStates: Map<string, QuickTrackState>;
 }) {
   return (
-    <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fill, 180px)" }}>
-      {results.map((r) => (
-        <PosterCard
-          key={`${r.media_type}-${r.id}`}
-          title={titleFromResult(r)}
-          posterPath={r.poster_path}
-          year={yearFromResult(r)}
-          href={`/title/${r.media_type}/${r.id}`}
-          size="md"
-        />
-      ))}
-    </div>
+    <TrackablePosterGrid
+      trackStates={trackStates}
+      items={results.map((r) => ({
+        key: `${r.media_type}-${r.id}`,
+        title: titleFromResult(r),
+        posterPath: r.poster_path,
+        year: yearFromResult(r),
+        tmdbId: r.id,
+        tmdbType: r.media_type,
+      }))}
+    />
   );
 }
 

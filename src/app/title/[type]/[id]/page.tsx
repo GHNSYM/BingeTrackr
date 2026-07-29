@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -5,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { EpisodeProgressWidget } from "@/components/trackr/EpisodeProgressWidget";
 import { MarkWatchedButton } from "@/components/trackr/MarkWatchedButton";
 import { RateButton } from "@/components/trackr/RateButton";
+import { TrackablePosterGrid } from "@/components/trackr/TrackablePosterGrid";
 import { WatchlistButton } from "@/components/trackr/WatchlistButton";
+import { POSTER_SIZE_COOKIE, parsePosterSize } from "@/lib/poster-size";
 import { createClient } from "@/lib/supabase/server";
 import {
   backdropUrl,
@@ -13,6 +16,8 @@ import {
   getTv,
   getWatchProviders,
   posterUrl,
+  titleFromResult,
+  yearFromResult,
   type TmdbMovieDetails,
   type TmdbTvDetails,
 } from "@/lib/tmdb/client";
@@ -20,6 +25,7 @@ import {
   ensureSeasonCached,
   getUserWatchedEpisodeIds,
 } from "@/lib/tmdb/seasons";
+import { getTitleRecommendations } from "@/lib/tmdb/recommendations";
 import { upsertMovie, upsertTv } from "@/lib/tmdb/upsert";
 import {
   getMyRating,
@@ -27,6 +33,7 @@ import {
   isInWatchlist,
   isMovieWatched,
 } from "@/lib/tracking/actions";
+import { getQuickTrackStates } from "@/lib/tracking/queries";
 
 type PageParams = Promise<{ type: string; id: string }>;
 type SearchParams = Promise<{ s?: string }>;
@@ -155,6 +162,29 @@ export default async function TitleDetailPage({
   const [inWatchlist, myRating] = user
     ? await Promise.all([isInWatchlist(ourMediaId), getMyRating(ourMediaId)])
     : [false, null];
+
+  // Franchise-first recommendations. Best-effort — never fail the page for it.
+  const recommendations = await getTitleRecommendations(
+    type,
+    id,
+    details,
+  ).catch(() => []);
+  const recTrackStates = user
+    ? await getQuickTrackStates(
+        recommendations.flatMap((section) =>
+          section.items.map((r) => ({
+            tmdbId: r.id,
+            tmdbType: r.media_type,
+          })),
+        ),
+      )
+    : undefined;
+
+  // Recommendation grids honour the global poster-size preference.
+  const cookieStore = await cookies();
+  const posterSize = parsePosterSize(
+    cookieStore.get(POSTER_SIZE_COOKIE)?.value,
+  );
 
   return (
     <main className="flex-1 flex flex-col">
@@ -346,6 +376,30 @@ export default async function TitleDetailPage({
               </h2>
               <p className="text-body leading-relaxed">{details.overview}</p>
             </section>
+          )}
+
+          {/* Recommendations — franchise first, then genre/co-watch similarity */}
+          {recommendations.length > 0 && (
+            <div data-poster-size={posterSize} className="mt-10 flex flex-col gap-10">
+              {recommendations.map((section) => (
+                <section key={section.label} className="flex flex-col gap-3">
+                  <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-meta">
+                    {section.label}
+                  </h2>
+                  <TrackablePosterGrid
+                    trackStates={recTrackStates}
+                    items={section.items.map((r) => ({
+                      key: `${r.media_type}-${r.id}`,
+                      title: titleFromResult(r),
+                      posterPath: r.poster_path,
+                      year: yearFromResult(r),
+                      tmdbId: r.id,
+                      tmdbType: r.media_type,
+                    }))}
+                  />
+                </section>
+              ))}
+            </div>
           )}
 
           <div className="h-16" />

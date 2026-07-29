@@ -1,5 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { fetchAllRows } from "@/lib/supabase/paginate";
 import { getSeason } from "./client";
 
 export type EpisodeRow = {
@@ -130,12 +131,20 @@ export async function getUserWatchedEpisodeIds(
   } = await supa.auth.getUser();
   if (!user) return new Set();
 
-  const { data } = await admin
-    .from("watched_entries")
-    .select("episode_id")
-    .eq("user_id", user.id)
-    .eq("media_id", mediaId)
-    .not("episode_id", "is", null);
+  // Paginated: a long-running anime (One Piece is 1100+ episodes) blows past
+  // PostgREST's 1000-row cap, and a truncated set would render watched
+  // episodes as unwatched.
+  const rows = await fetchAllRows<{ episode_id: string }>((from, to) =>
+    admin
+      .from("watched_entries")
+      .select("episode_id")
+      .eq("user_id", user.id)
+      .eq("media_id", mediaId)
+      .not("episode_id", "is", null)
+      .order("episode_id", { ascending: true })
+      .range(from, to)
+      .overrideTypes<{ episode_id: string }[]>(),
+  );
 
-  return new Set((data ?? []).map((r) => r.episode_id as string));
+  return new Set(rows.map((r) => r.episode_id));
 }
