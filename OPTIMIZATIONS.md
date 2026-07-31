@@ -63,112 +63,271 @@ Per-request costs measured on the same data:
 
 ## P1 — do before real users
 
-### 1. `getContinueWatching` pulls every episode of every show
+### 1. `getContinueWatching` pulls every episode of every show — **DONE 2026-08-01**
 
-`src/lib/tracking/queries.ts` → `getContinueWatching`
+`src/lib/tracking/queries.ts` → `getContinueWatching`, now a single
+`get_continue_watching` RPC call
+(`20260731120003_continue_watching_rpc.sql`).
 
-One query **per show**, and each one fetches *all* episodes of that show, then
-finds the next unwatched one in JS. Measured at 34× waste above. The Library
-"Watching" tab calls this with `limit = 50`, so worst case is 50 queries and
-several thousand rows for a single page view. The function's own comment admits
-this was a deliberate stopgap while the query shape settled. It has settled.
+**Measured, same data, same 5 shows: 8 queries and 171 episode rows → 1 query
+and 0 episode rows over the wire.** Output byte-identical to the old
+implementation, compared field by field including the `next` episode object.
 
-Fix, best first:
+**Chosen: the RPC, not a denormalized `show_progress.next_episode_id`.** The
+deciding argument, in full in the migration header: the next episode is derived
+from the resume pointer *and* the episode catalogue, and the catalogue moves on
+its own — `ensureSeasonCached` fills seasons lazily and new seasons air. A stored
+pointer computed while S2 was uncached would say "all caught up" forever, with
+nothing to recompute it when S2 later arrives via an unrelated title-page visit.
+That is a silent failure of the founding feature. The pointer also had 6+ writers
+to keep honest, and still needed the episodes join for name/runtime anyway.
 
-- **Postgres RPC with a lateral join** — one query returning one "next episode"
-  row per show. Kills both the N+1 and the payload.
-- **Denormalize `next_episode_id` onto `show_progress`**, maintained on each
-  mark. Read cost drops to zero extra queries; costs one lookup per write.
-  Simpler, but adds an invariant to keep honest.
+The trick is a row-constructor comparison —
+`(s.season_number, e.episode_number) > (sp.current_season, sp.current_episode)`
+— which expresses "first episode after the resume point" natively. One expression
+replaced the fetch-everything-sort-then-find.
 
-Either needs a migration, so it's the user's call to author.
+**The denormalized sort key on `episodes` from the original write-up was
+deliberately NOT added.** It only existed to work around PostgREST's inability to
+order on an embedded column, and the RPC dissolves that constraint. A composite
+integer key (`season * 1000 + episode`) would also break on any season past 1000
+episodes — a real risk in a codebase that already handles 1100+-episode anime and
+carries scars from the 1000-row cap. Existing indexes
+(`seasons unique (media_id, season_number)`, `episodes_season_idx`) already serve
+the lateral; if it ever profiles slow, add an index, not a column.
 
-Note the payload problem is separate from the N+1: even scoped to one show,
-`season_number` lives on the joined `seasons` table, so we can't
-`.order().limit(1)` on (season, episode) directly. A denormalized sort key on
-`episodes` would let a single row come back per show.
+### 2. `auth.getUser()` is called 6× per title-page render — **DONE 2026-07-31**
 
-### 2. `auth.getUser()` is called 6× per title-page render
-
-Every query helper independently calls `createClient()` then
+Every query helper independently called `createClient()` then
 `supabase.auth.getUser()`. **`getUser()` is a network round-trip** — it
 validates the JWT against Supabase Auth rather than reading it locally.
 
-`getUserAndProfile` in `src/lib/auth/require-user.ts` is already wrapped in
-React's `cache()` and gets this right. Nothing else is.
+Fixed as planned: `getCurrentUser()` in **`src/lib/auth/current-user.ts`**,
+wrapped in React's `cache()`, is now the single primitive every auth read goes
+through — including `getUserAndProfile` and `requireUser`, which previously had
+their own `getUser()` call. So a layout + page + N helpers cost one round-trip
+between them, not one each.
 
-Fix: a `cache()`d `getCurrentUser()` and route every helper through it. Low
-risk, mechanical, measurable — should take one page from ~8 auth round-trips
-(including middleware and layout) to 1.
+All 34 call sites in `tracking/queries.ts`, `tracking/actions.ts`,
+`tracking/quick-actions.ts`, `tmdb/seasons.ts`, `auth/actions.ts`, the title
+page and the public profile page now route through it. **Only `proxy.ts` calls
+`getUser()` directly** — that one is the middleware session refresh and must
+stay. Treat that as the invariant: if a new `auth.getUser()` appears anywhere
+else, it's a regression.
 
-### 3. Quick actions hit TMDB even when the title is already cached
+Three files (`seasons.ts`, the title page, the profile page) were creating a
+Supabase client *solely* to call `getUser()`; those clients and their imports
+are gone.
+
+**Measured** with a temporary probe page calling 7 helpers in one render:
+**7 round-trips before, 1 after**, and 1 per request across repeated requests
+(so the memoisation is per-request, not leaking between users).
+
+Note the win is bigger than the "6" in the title: the count scales with how many
+helpers a route calls, so Library and Tiers benefit too.
+
+### 3. Quick actions hit TMDB even when the title is already cached — **DONE 2026-07-31**
 
 `src/lib/tracking/quick-actions.ts` → `resolveMediaId`
 
-Every Watched/Watchlist click on a poster calls `getMovie`/`getTv` purely to
+Every Watched/Watchlist click on a poster called `getMovie`/`getTv` purely to
 resolve a TMDB id to our internal `media.id`, even when `media_external_ids`
-already has the mapping. We refetch server-side on purpose — so a client can't
-write arbitrary rows into `media` — but that reasoning only applies when we
-actually need to *insert*.
+already had the mapping.
 
-Fix: look up `media_external_ids` first and return early on a hit; fall through
-to the TMDB fetch only for genuinely new titles. Removes a TMDB call and a
-`media` update from the common path. Cheap, self-contained, no migration.
+Fixed: `resolveMediaId` now reads `media_external_ids` first and returns on a
+hit, falling through to the TMDB fetch + `upsertMedia` only for genuinely new
+titles. The common path loses one TMDB round-trip **and** the `media` UPDATE
+that `upsertMedia` does on every touch, at the cost of one indexed single-row
+read. `media` and `media_external_ids` are both world-readable, so this needs no
+admin client.
+
+Originally this needed a post-hoc `media.type` check, because #9 meant
+`(source, external_id)` could point at a movie when the caller asked about a
+show. **#9 is now fixed in the schema, so that guard is gone rather than merely
+working**: `media_type` is part of the primary key, making this a single indexed
+lookup that cannot return a row of the wrong type, and the join to `media`
+disappeared with it.
+
+Verified against the live DB: a cached id returns its `media_id`; an uncached id
+returns `null` cleanly and falls through to TMDB.
 
 ---
 
+## Migrations applied — 2026-08-01
+
+All four 2026-07-31 migrations are **applied and their TypeScript is rewired**.
+Verified against the live database after apply:
+
+| Migration | Item | Verified |
+|---|---|---|
+| `…0001_media_external_ids_type.sql` | #9 | 90 rows backfilled, 0 null `media_type`, 0 disagreeing with `media.type`; movie+show may now share a TMDB id; a mismatched `media_type` is rejected by the composite FK |
+| `…0002_media_tmdb_id_cache.sql` | #7 | backfill exact; trigger fires correctly on INSERT and on DELETE |
+| `…0003_continue_watching_rpc.sql` | #1 | 8 queries/171 rows → 1 query/0 rows, output identical |
+| `…0004_stats_rpcs.sql` | #4 | every figure matches the old JS aggregation for both accounts, including top-shows ordering |
+
+Two notes for whoever reads this next:
+
+- **`media_external_ids.media_type` is NOT NULL with a composite FK to
+  `media(id, type)`.** Any new insert must supply it and it must agree with the
+  media row. `upsertMedia` does; hand-written inserts won't.
+- **`media.tmdb_id` is trigger-maintained.** Never write it directly —
+  `media_external_ids` is still the source of truth. To read a TMDB id, add
+  `tmdb_id` to the `media` join you are already doing.
+
 ## P2 — when metrics say so
 
-### 4. `getStats` aggregates in JS over every watched entry
+### 4. `getStats` aggregates in JS over every watched entry — **DONE 2026-08-01**
 
-`src/lib/tracking/queries.ts` → `getStats`
+`getStats` now makes **three RPC calls** instead of reading every watched entry
+with a media join and aggregating in JS. `getPublicProfileCounts` is **one call**
+instead of four queries plus a paginated read of the whole runtime column.
 
-Now correct (it paginates — see `src/lib/supabase/paginate.ts`), but it reads
-every row to compute sums: `ceil(n / 1000)` requests and the full table over
-the wire. At 1498 rows that's 2 requests; at 20k it's 20 and megabytes of
-egress per stats view.
+`get_on_this_day` replaced **two** implementations: `getOnThisDay()` and the
+redundant `getStats().onThisDay` flagged in `DESIGN_ROADMAP.md`. It also removed
+the OR'd-one-day-range-per-prior-year hack that existed because PostgREST cannot
+filter on `EXTRACT(MONTH FROM …)` — in SQL that is just a predicate, and the
+one-row-per-title de-dupe is a window function rather than a JS loop. The
+`yearsBack` parameter is gone; it only ever existed to bound the OR clauses.
 
-Fix: a Postgres RPC doing `SUM`/`COUNT ... GROUP BY`. One query, no row cap,
-almost no egress. The function's existing comment already anticipates this.
-Needs a migration.
+**Verified** for both accounts against the old JS aggregation: all nine totals
+identical (e.g. `total_minutes: 70782`, `episodes_watched: 1942`,
+`shows_completed: 25`), top-shows lists identical including order, profile counts
+identical. `get_on_this_day` was additionally verified by seeding a watch dated
+exactly one year ago: it came back with `years_ago: 1`, `is_episode: false` and a
+populated `tmdb_id`; the seed row was removed afterwards.
 
-Same shape, same fix: `getPublicProfileCounts` sums `runtime_minutes` in JS.
+**Timezone caveat, deliberately preserved.** The RPCs take `p_tz` defaulting to
+`'UTC'`, which is what `new Date()` on a Vercel function did. For an India-first
+product, "this year" and "on this day" arguably belong in `Asia/Kolkata` — that
+is a product decision, so it is a parameter rather than a silent behaviour
+change. Flip it by passing `p_tz` from the callers.
 
-### 5. `getLibraryCounts` is 7 queries for 4 numbers
+### 5. `getLibraryCounts` is 7 queries for 4 numbers — **DONE 2026-07-31**
 
-Five counts, plus the two added to exclude finished titles from the watchlist
-count. Foldable into one RPC, or into fewer queries with `GROUP BY status`.
+Now **4 queries**, no migration needed.
 
-### 6. `getPublicListsByUser` is an N+1
+`GROUP BY status` turned out to be unavailable: PostgREST rejects aggregate
+selects on this project ("Use of aggregate functions is not allowed", verified
+against the live API), so `select=status,count()` is out. Instead the three
+`head: true` counts against `show_progress` collapsed into one read of
+`(media_id, status)` tallied in JS — that table is one row per (user, show), so
+it's inherently small and two narrow columns beat three round-trips.
 
-`src/lib/tracking/queries.ts` — two queries per list (count + cover posters).
-Fine for a handful of lists, linear in list count. One grouped query, or accept
-it and cap lists per profile.
+That read also *is* the completed-shows set, which is half of what
+`getFinishedMediaIds` computes, so the watchlist exclusion dropped from two
+queries to one.
 
-### 7. `getTmdbIdMap` is an extra round-trip per grid
+Both list reads are now paginated via `fetchAllRows`. They weren't before — a
+user tracking or watchlisting >1000 titles would have silently got a wrong badge.
 
-Every poster grid fetches rows, then makes a second query to map internal ids
-back to TMDB ids. Denormalizing `tmdb_id` onto `media` would remove this call
-from Library, Watched, Watchlist, Dropped, Tiers, and Stats. Needs a migration
-and a decision about the indirection `AGENTS.md` deliberately introduced — the
-mapping table exists for anime reconciliation, so denormalize as a *cache
-column*, not a replacement.
+**Verified** against both real accounts: counts identical before and after
+(`{watching:5, watched:47, watchlist:23, dropped:2}` and
+`{0, 3, 1, 0}`).
 
-### 8. Title page fires ~12-15 Supabase queries
+### 6. `getPublicListsByUser` is an N+1 — **DONE 2026-07-31**
+
+Now **2 queries** regardless of list count, no migration needed. Items for every
+list come back in one read scoped to those list ids; per-list count and the first
+four cover posters are derived from it.
+
+The trade: `itemCount` is a JS tally rather than a server-side `head: true`,
+because a grouped count would need an RPC (aggregates blocked, as in #5). Reading
+the rows is cheaper at list sizes a human curates, and it's paginated so a large
+list costs extra requests rather than a wrong number.
+
+**Verified** with two throwaway public lists of different sizes, positions
+inserted in reverse to exercise the ordering path: identical counts and identical
+cover-poster arrays, 5 queries → 2. Temp data cleaned up.
+
+### 7. `getTmdbIdMap` is an extra round-trip per grid — **DONE 2026-08-01**
+
+`getTmdbIdMap` is **deleted**. Every caller now reads `media.tmdb_id` off the
+media join it was already doing, removing one round-trip from Library, Watched,
+Watchlist, Dropped, Tiers, Stats, Recently-watched, On-this-day and Continue
+Watching. `markEveryEpisodeWatched` also stopped querying `media_external_ids`
+for the show's TMDB id.
+
+Denormalized as a **cache column, not a replacement** — `media_external_ids`
+remains the source of truth for the indirection `AGENTS.md` introduced for anime
+reconciliation. It is trigger-maintained rather than application-maintained,
+which is what makes it safe: exactly one writer, and that writer is the database.
+
+`getQuickTrackStates` still reads `media_external_ids` directly, correctly — it
+maps many TMDB ids to media ids, which is that table's actual job. It no longer
+needs the `media` join, though, since `media_type` lives on the row now.
+
+### 10. `getRecentActivity` reads a 400-row window to build 12 grouped rows
+
+`src/lib/tracking/queries.ts` → `getRecentActivity`
+
+The public profile feed groups consecutive episodes of the same show into one row
+("S1 · E1–E6"). Ungrouped it was unusable: measured on real data, the old 12-row
+feed contained **1** distinct title — twelve episodes of The Winchesters, because
+marking a season writes every row with the same `watched_at`.
+
+Grouping happens in JS over a bounded 400-row window, because PostgREST has
+aggregates disabled on this project and cannot `DISTINCT`, so "the last N shows"
+isn't expressible over REST. It's one request and it's capped, but it's still
+reading ~400 rows with two joins to render twelve lines, and a single huge binge
+can fill the whole window and yield fewer than `limit` groups.
+
+Fix when it matters: an RPC using a gaps-and-islands window function
+(`row_number() - dense_rank()` over `media_id` ordered by `watched_at`) to
+collapse runs server-side, returning `min`/`max` season+episode and a count per
+group. Then the read is twelve rows. Not urgent — the profile is a deliberate
+visit, not a hot route.
+
+### 8. Title page fires ~12-15 Supabase queries — **PARTLY OVERTAKEN**
 
 `getShowProgress`, `isInWatchlist`, `getMyRating`, `isMovieWatched`,
 `getUserWatchedEpisodeIds`, `getQuickTrackStates`, plus the `upsert*` lookups.
 Several are single-row reads against the same user. Batchable into one RPC or a
-couple of combined queries. Do #2 first — it removes most of the round-trips
-without touching query structure.
+couple of combined queries.
 
-### 9. `media_external_ids` primary key can collide
+#2 is done, which already removed the auth round-trips this item was mostly
+about. What's left is the genuine per-table reads — re-measure before deciding
+it's still worth an RPC.
 
-`(source, external_id)` is the PK, but TMDB numbers movies and TV separately —
-movie 550 and show 550 are different titles that map to one row. Not a
-performance item, but it's a latent correctness bug in the same file you'll be
-touching for #7, so fix them together. `getQuickTrackStates` already keys on
-type+id to work around it.
+### 9. `media_external_ids` primary key can collide — **DONE 2026-08-01**
+
+**This was a live correctness bug, not a performance item.** `(source,
+external_id)` was the PK, but TMDB numbers movies and TV separately — movie 550
+and show 550 are different titles that collided on one row, so `upsertMedia`
+would update the wrong title's `media` record and return the wrong `media_id`.
+
+Fixed: the PK is now `(source, external_id, media_type)`, with `media_type`
+denormalized from `media.type` and held honest by a composite FK to
+`media(id, type)` (`on update cascade`, `on delete cascade`). The database
+enforces agreement; there is no application invariant to forget.
+
+Denormalizing here is safe for a reason worth keeping straight: `media.type` is
+**immutable in practice** — a title does not become a different kind of thing.
+That is precisely why the derived-and-changing `next_episode_id` in #1 was
+rejected while this was accepted.
+
+Both work-arounds are gone: `resolveMediaId` does a direct PK lookup, and
+`getQuickTrackStates` reads `media_type` off the row instead of joining `media`.
+`upsertMedia` writes `media_type` on insert and filters on it when checking for
+an existing mapping.
+
+**Verified** post-apply: a movie and a show can now hold the same TMDB id, and an
+insert whose `media_type` disagrees with its media row is rejected by the FK.
+
+**One side effect, found by running every query shape after the apply.**
+PostgREST derives embeds from foreign keys, so swapping the single-column FK for
+a composite one *removes* the ability to embed `media` from this table:
+
+```
+.from("media_external_ids").select("media_id, media:media_id ( type )")
+→ Could not find a relationship between 'media_external_ids' and 'media_id'
+```
+
+Harmless as it stands — the only query doing that was `getQuickTrackStates`,
+which embedded `media` purely to read `type` and now reads `media_type` off the
+row. But note the dependency: **had that rewiring not happened, this migration
+would have broken poster hover state.** If you need media columns beside a
+mapping row in future, use a second query or an RPC. Don't restore the
+single-column FK — it's what allowed the collision.
 
 ---
 

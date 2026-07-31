@@ -11,6 +11,31 @@
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const IMG_BASE = "https://image.tmdb.org/t/p";
 
+/**
+ * A non-2xx from TMDB, carrying the status so callers can tell "this title does
+ * not exist" (404) from "TMDB is having a bad day" (5xx / 429).
+ *
+ * That distinction is load-bearing on the title page: a 404 must render the
+ * not-found page, while an outage must surface as an error. Collapsing both into
+ * `notFound()` would quietly tell users their titles had vanished during a TMDB
+ * incident, and would let search engines de-index real pages.
+ */
+export class TmdbError extends Error {
+  constructor(
+    readonly status: number,
+    readonly path: string,
+    body?: string,
+  ) {
+    super(`TMDB ${status} on ${path}${body ? `: ${body}` : ""}`);
+    this.name = "TmdbError";
+  }
+}
+
+/** True when TMDB says the resource genuinely doesn't exist. */
+export function isTmdbNotFound(err: unknown): boolean {
+  return err instanceof TmdbError && err.status === 404;
+}
+
 export type TmdbMediaType = "movie" | "tv";
 
 export type TmdbSearchResult = {
@@ -137,7 +162,7 @@ async function tmdb<T>(
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`TMDB ${res.status} on ${path}: ${body.slice(0, 200)}`);
+    throw new TmdbError(res.status, path, body.slice(0, 200));
   }
   return (await res.json()) as T;
 }

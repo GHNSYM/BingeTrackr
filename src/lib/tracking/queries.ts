@@ -1,4 +1,5 @@
 import "server-only";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { fetchAllRows } from "@/lib/supabase/paginate";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile } from "@/types/db";
@@ -67,61 +68,94 @@ async function getFinishedMediaIds(
 }
 
 /**
- * Counts for the tab badges. Head-only counts where we can; the watchlist
- * count has to pull ids so it can exclude anything already finished (keeping
- * the badge honest against the filtered list).
+ * Counts for the tab badges. Four queries for four numbers.
+ *
+ * This used to be seven: three separate `head: true` counts against
+ * `show_progress` (watching / completed / dropped), plus the two inside
+ * `getFinishedMediaIds`. PostgREST rejects aggregate selects on this project
+ * ("Use of aggregate functions is not allowed" — verified against the live
+ * API), so `GROUP BY status` isn't available over REST. Instead we read the
+ * status column once and tally in JS: `show_progress` is one row per (user,
+ * show), so it's inherently small, and two tiny columns cost far less than
+ * three extra round-trips.
+ *
+ * That read also *is* the set of completed shows, which is half of what
+ * `getFinishedMediaIds` computes — so the watchlist exclusion only needs the
+ * watched-movies half, saving another query.
+ *
+ * Both list reads are paginated. They're per-user and bounded in practice, but
+ * "how many shows can someone track" has no ceiling, and a silent truncation at
+ * 1000 here would under-report a badge rather than fail loudly.
  */
 export async function getLibraryCounts(): Promise<LibraryCounts> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   const empty = { watching: 0, watched: 0, watchlist: 0, dropped: 0 };
   if (!user) return empty;
 
-  const [
-    watchingRes,
-    watchedMoviesRes,
-    completedShowsRes,
-    watchlistRes,
-    droppedRes,
-  ] = await Promise.all([
-    supabase
-      .from("show_progress")
-      .select("media_id", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("status", "watching"),
+  type ProgressRow = { media_id: string; status: string };
+  type IdRow = { media_id: string };
+
+  const [progressRows, watchedMoviesRes, watchlistRows] = await Promise.all([
+    fetchAllRows<ProgressRow>((from, to) =>
+      supabase
+        .from("show_progress")
+        .select("media_id, status")
+        .eq("user_id", user.id)
+        .order("media_id", { ascending: true })
+        .range(from, to)
+        .overrideTypes<ProgressRow[]>(),
+    ),
     supabase
       .from("watched_entries")
       .select("media_id", { count: "exact", head: true })
       .eq("user_id", user.id)
       .is("episode_id", null),
-    supabase
-      .from("show_progress")
-      .select("media_id", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("status", "completed"),
-    supabase
-      .from("watchlist_entries")
-      .select("media_id")
-      .eq("user_id", user.id),
-    supabase
-      .from("show_progress")
-      .select("media_id", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .eq("status", "dropped"),
+    fetchAllRows<IdRow>((from, to) =>
+      supabase
+        .from("watchlist_entries")
+        .select("media_id")
+        .eq("user_id", user.id)
+        .order("media_id", { ascending: true })
+        .range(from, to)
+        .overrideTypes<IdRow[]>(),
+    ),
   ]);
 
-  const watchlistIds = (watchlistRes.data ?? []).map(
-    (r) => r.media_id as string,
-  );
-  const finished = await getFinishedMediaIds(supabase, user.id, watchlistIds);
+  let watching = 0;
+  let dropped = 0;
+  let completedShows = 0;
+  const completedIds = new Set<string>();
+  for (const r of progressRows) {
+    if (r.status === "watching") watching++;
+    else if (r.status === "dropped") dropped++;
+    else if (r.status === "completed") {
+      completedShows++;
+      completedIds.add(r.media_id);
+    }
+  }
+
+  // Anything finished isn't "to watch" any more. Completed shows we already
+  // know; only the watched-movies half needs a query, scoped to the candidates.
+  const watchlistIds = watchlistRows.map((r) => r.media_id);
+  let watchedMovieIds = new Set<string>();
+  if (watchlistIds.length > 0) {
+    const { data } = await supabase
+      .from("watched_entries")
+      .select("media_id")
+      .eq("user_id", user.id)
+      .in("media_id", watchlistIds)
+      .is("episode_id", null);
+    watchedMovieIds = new Set((data ?? []).map((r) => r.media_id as string));
+  }
 
   return {
-    watching: watchingRes.count ?? 0,
-    watched: (watchedMoviesRes.count ?? 0) + (completedShowsRes.count ?? 0),
-    watchlist: watchlistIds.filter((id) => !finished.has(id)).length,
-    dropped: droppedRes.count ?? 0,
+    watching,
+    watched: (watchedMoviesRes.count ?? 0) + completedShows,
+    watchlist: watchlistIds.filter(
+      (id) => !completedIds.has(id) && !watchedMovieIds.has(id),
+    ).length,
+    dropped,
   };
 }
 
@@ -132,9 +166,7 @@ export async function getLibraryCounts(): Promise<LibraryCounts> {
  */
 export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return [];
 
   type MediaJoin = {
@@ -143,6 +175,7 @@ export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
     poster_path: string | null;
     type: "movie" | "tv";
     release_year: number | null;
+    tmdb_id: string | null;
   };
   type MovieRow = { media_id: string; watched_at: string; media: MediaJoin | null };
   type ShowRow = {
@@ -157,7 +190,7 @@ export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
         .from("watched_entries")
         .select(
           `media_id, watched_at,
-           media:media_id ( id, title, poster_path, type, release_year )`,
+           media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
         )
         .eq("user_id", user.id)
         .is("episode_id", null)
@@ -170,7 +203,7 @@ export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
         .from("show_progress")
         .select(
           `media_id, status_changed_at,
-           media:media_id ( id, title, poster_path, type, release_year )`,
+           media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
         )
         .eq("user_id", user.id)
         .eq("status", "completed")
@@ -212,13 +245,11 @@ export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
     (a, b) => new Date(b.when).getTime() - new Date(a.when).getTime(),
   );
 
-  const tmdbMap = await getTmdbIdMap(deduped.map((r) => r.media_id));
-
   return deduped.map((r) => ({
     mediaId: r.media_id,
     title: r.media.title,
     posterPath: r.media.poster_path,
-    tmdbId: tmdbMap.get(r.media_id) ?? null,
+    tmdbId: r.media.tmdb_id,
     tmdbType: r.media.type,
     releaseYear: r.media.release_year,
     meta: relativeWhen(r.when),
@@ -227,16 +258,14 @@ export async function getWatchedItems(): Promise<LibraryPosterItem[]> {
 
 export async function getWatchlistItems(): Promise<LibraryPosterItem[]> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return [];
 
   const { data: rows } = await supabase
     .from("watchlist_entries")
     .select(
       `media_id, added_at, priority,
-       media:media_id ( id, title, poster_path, type, release_year )`,
+       media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
     )
     .eq("user_id", user.id)
     .order("priority", { ascending: false })
@@ -254,20 +283,19 @@ export async function getWatchlistItems(): Promise<LibraryPosterItem[]> {
   const data = rows.filter((r) => !finished.has(r.media_id as string));
   if (data.length === 0) return [];
 
-  const tmdbMap = await getTmdbIdMap(data.map((r) => r.media_id as string));
-
   return data.map((r) => {
     const m = r.media as unknown as {
       title: string;
       poster_path: string | null;
       type: "movie" | "tv";
       release_year: number | null;
+      tmdb_id: string | null;
     };
     return {
       mediaId: r.media_id as string,
       title: m.title,
       posterPath: m.poster_path,
-      tmdbId: tmdbMap.get(r.media_id as string) ?? null,
+      tmdbId: m.tmdb_id,
       tmdbType: m.type,
       releaseYear: m.release_year,
       meta: relativeWhen(r.added_at as string, "Added"),
@@ -277,23 +305,20 @@ export async function getWatchlistItems(): Promise<LibraryPosterItem[]> {
 
 export async function getDroppedItems(): Promise<LibraryPosterItem[]> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return [];
 
   const { data } = await supabase
     .from("show_progress")
     .select(
       `media_id, status_changed_at,
-       media:media_id ( id, title, poster_path, type, release_year )`,
+       media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
     )
     .eq("user_id", user.id)
     .eq("status", "dropped")
     .order("status_changed_at", { ascending: false });
 
   if (!data) return [];
-  const tmdbMap = await getTmdbIdMap(data.map((r) => r.media_id as string));
 
   return data.map((r) => {
     const m = r.media as unknown as {
@@ -301,12 +326,13 @@ export async function getDroppedItems(): Promise<LibraryPosterItem[]> {
       poster_path: string | null;
       type: "movie" | "tv";
       release_year: number | null;
+      tmdb_id: string | null;
     };
     return {
       mediaId: r.media_id as string,
       title: m.title,
       posterPath: m.poster_path,
-      tmdbId: tmdbMap.get(r.media_id as string) ?? null,
+      tmdbId: m.tmdb_id,
       tmdbType: m.type,
       releaseYear: m.release_year,
       meta: relativeWhen(r.status_changed_at as string, "Dropped"),
@@ -339,9 +365,7 @@ export type MonthActivity = {
  */
 export async function getMonthActivity(): Promise<MonthActivity> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   const empty = { episodes: 0, movies: 0, minutes: 0 };
   if (!user) return empty;
 
@@ -384,84 +408,49 @@ export type OnThisDayItem = {
 /**
  * What you watched on this calendar day in previous years.
  *
- * PostgREST can't filter on `EXTRACT(MONTH FROM ...)`, so instead of scanning
- * everything and matching in JS (what getStats does), this ORs together one
- * single-day range per prior year. Bounded, one round-trip, and verified
- * against the live DB.
+ * One RPC call. Previously this ORed together one single-day range per prior
+ * year, because PostgREST can't filter on `EXTRACT(MONTH FROM ...)` — a real
+ * constraint that produced a real hack. In SQL it's just a predicate, and the
+ * de-dupe to one row per title is a window function rather than a JS loop over
+ * every matching row.
+ *
+ * The `yearsBack` parameter is gone: it existed only to bound the number of OR
+ * clauses. The RPC compares years directly, so all history is covered.
  *
  * Returns empty until an account has a year of history — expected, not a bug.
  */
-export async function getOnThisDay(
-  yearsBack = 10,
-  limit = 12,
-): Promise<OnThisDayItem[]> {
+export async function getOnThisDay(limit = 12): Promise<OnThisDayItem[]> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return [];
 
-  const now = new Date();
-  const month = now.getMonth();
-  const day = now.getDate();
-  const currentYear = now.getFullYear();
-
-  const clauses: string[] = [];
-  for (let y = currentYear - 1; y >= currentYear - yearsBack; y--) {
-    // `new Date(y, month, day + 1)` rolls month/year over correctly.
-    const start = new Date(y, month, day).toISOString();
-    const end = new Date(y, month, day + 1).toISOString();
-    clauses.push(
-      `and(watched_at.gte."${start}",watched_at.lt."${end}")`,
-    );
-  }
-
-  const { data } = await supabase
-    .from("watched_entries")
-    .select(
-      `watched_at, media_id, episode_id,
-       media:media_id ( id, title, poster_path, type )`,
-    )
-    .eq("user_id", user.id)
-    .or(clauses.join(","))
-    .order("watched_at", { ascending: false });
-
-  if (!data || data.length === 0) return [];
-
-  // One entry per title — a binge shouldn't fill the rail with one show.
   type Row = {
-    watched_at: string;
     media_id: string;
-    media: {
-      title: string;
-      poster_path: string | null;
-      type: "movie" | "tv";
-    } | null;
+    title: string;
+    poster_path: string | null;
+    tmdb_id: string | null;
+    media_type: "movie" | "tv";
+    watched_at: string;
+    years_ago: number;
+    is_episode: boolean;
   };
-  const seen = new Set<string>();
-  const picked: Row[] = [];
-  for (const row of data as unknown as Row[]) {
-    if (!row.media || seen.has(row.media_id)) continue;
-    seen.add(row.media_id);
-    picked.push(row);
-    if (picked.length >= limit) break;
-  }
-  if (picked.length === 0) return [];
 
-  const tmdbMap = await getTmdbIdMap(picked.map((r) => r.media_id));
-
-  return picked.map((r) => {
-    const yearsAgo = currentYear - new Date(r.watched_at).getFullYear();
-    return {
-      mediaId: r.media_id,
-      title: r.media!.title,
-      posterPath: r.media!.poster_path,
-      tmdbId: tmdbMap.get(r.media_id) ?? null,
-      tmdbType: r.media!.type,
-      yearsAgo,
-      meta: yearsAgo === 1 ? "1 year ago" : `${yearsAgo} years ago`,
-    };
+  const { data, error } = await supabase.rpc("get_on_this_day", {
+    p_user_id: user.id,
+    p_limit: limit,
   });
+
+  if (error || !data) return [];
+
+  return (data as Row[]).map((r) => ({
+    mediaId: r.media_id,
+    title: r.title,
+    posterPath: r.poster_path,
+    tmdbId: r.tmdb_id,
+    tmdbType: r.media_type,
+    yearsAgo: r.years_ago,
+    meta: r.years_ago === 1 ? "1 year ago" : `${r.years_ago} years ago`,
+  }));
 }
 
 export type RecentlyWatchedItem = {
@@ -491,15 +480,14 @@ export async function getRecentlyWatched(
   limit = 12,
 ): Promise<RecentlyWatchedItem[]> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return [];
 
   type MediaJoin = {
     title: string;
     poster_path: string | null;
     type: "movie" | "tv";
+    tmdb_id: string | null;
   };
 
   const [showsRes, moviesRes] = await Promise.all([
@@ -507,7 +495,7 @@ export async function getRecentlyWatched(
       .from("show_progress")
       .select(
         `media_id, status_changed_at, current_season, current_episode,
-         media:media_id ( id, title, poster_path, type )`,
+         media:media_id ( id, title, poster_path, type, tmdb_id )`,
       )
       .eq("user_id", user.id)
       .order("status_changed_at", { ascending: false })
@@ -516,7 +504,7 @@ export async function getRecentlyWatched(
       .from("watched_entries")
       .select(
         `media_id, watched_at,
-         media:media_id ( id, title, poster_path, type )`,
+         media:media_id ( id, title, poster_path, type, tmdb_id )`,
       )
       .eq("user_id", user.id)
       .is("episode_id", null)
@@ -568,15 +556,13 @@ export async function getRecentlyWatched(
 
   if (picked.length === 0) return [];
 
-  const tmdbMap = await getTmdbIdMap(picked.map((r) => r.mediaId));
-
   return picked.map((r) => {
     const when = bareRelative(r.when);
     return {
       mediaId: r.mediaId,
       title: r.media.title,
       posterPath: r.media.poster_path,
-      tmdbId: tmdbMap.get(r.mediaId) ?? null,
+      tmdbId: r.media.tmdb_id,
       tmdbType: r.media.type,
       meta: r.episodeLabel ? `${r.episodeLabel} · ${when}` : when,
     };
@@ -602,16 +588,16 @@ export async function getQuickTrackStates(
   if (targets.length === 0) return states;
 
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return states;
 
   const externalIds = [...new Set(targets.map((t) => String(t.tmdbId)))];
 
+  // `media_type` lives on this table now (it's part of the PK), so the key can
+  // be built without joining `media` at all.
   const { data: extRows } = await supabase
     .from("media_external_ids")
-    .select("external_id, media_id, media:media_id ( type )")
+    .select("external_id, media_id, media_type")
     .eq("source", "tmdb")
     .in("external_id", externalIds);
 
@@ -620,11 +606,9 @@ export async function getQuickTrackStates(
   // media_id → `${type}-${tmdbId}` key.
   const keyByMediaId = new Map<string, string>();
   for (const row of extRows) {
-    const media = row.media as unknown as { type: "movie" | "tv" } | null;
-    if (!media) continue;
     keyByMediaId.set(
       row.media_id as string,
-      `${media.type}-${row.external_id as string}`,
+      `${row.media_type as string}-${row.external_id as string}`,
     );
   }
   const mediaIds = [...keyByMediaId.keys()];
@@ -685,20 +669,10 @@ export function quickTrackKey(
 
 // ─── Internal ──────────────────────────────────────────────────────────────
 
-async function getTmdbIdMap(mediaIds: string[]): Promise<Map<string, string>> {
-  if (mediaIds.length === 0) return new Map();
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from("media_external_ids")
-    .select("media_id, external_id")
-    .eq("source", "tmdb")
-    .in("media_id", mediaIds);
-  const map = new Map<string, string>();
-  for (const r of data ?? []) {
-    map.set(r.media_id as string, r.external_id as string);
-  }
-  return map;
-}
+// `getTmdbIdMap` lived here: a second round-trip on every poster grid to map
+// internal ids back to TMDB ids. `media.tmdb_id` is now a trigger-maintained
+// cache column, so the id comes back on the media join the caller already does.
+// Don't reintroduce it — add `tmdb_id` to the join instead.
 
 /** Just the elapsed part — "today", "3d ago", "2mo ago". */
 function bareRelative(iso: string): string {
@@ -754,27 +728,31 @@ export type Stats = {
 };
 
 /**
- * Everything the /stats page needs, in as few round-trips as we can
- * reasonably manage: one big fetch of watched_entries with the media join,
- * one count for shows-completed, then all aggregation in JS. Fine up to
- * tens of thousands of watched entries; if a user ever crosses that we
- * push some of this into a Postgres function.
- */
-/**
+ * Everything the /stats page needs, via three aggregate RPCs.
+ *
+ * This used to read EVERY watched entry with a media join and aggregate in JS:
+ * `ceil(n / 1000)` paginated requests and the whole table over the wire, just to
+ * produce a dozen numbers. Correct, but egress grew linearly with history — at
+ * 20k entries that was 20 requests and megabytes per stats view.
+ *
+ * `get_stats_totals` and `get_stats_top_shows` do the SUM/COUNT in Postgres, and
+ * `get_on_this_day` replaces what used to be a second, redundant implementation
+ * of the same idea inside this function (see DESIGN_ROADMAP.md). It is now the
+ * single on-this-day query, shared with the Home rail.
+ *
  * Optionally scoped to a specific user id (for public profiles). If omitted,
- * uses the current auth session. RLS enforces that a caller can only read
- * another user's aggregates if that user's profile is_public = true.
+ * uses the current auth session. The RPCs are `security invoker`, so RLS still
+ * enforces that a caller can only read another user's aggregates if that user's
+ * profile is_public = true.
  */
 export async function getStats(overrideUserId?: string): Promise<Stats> {
   const supabase = await createClient();
   let targetUserId = overrideUserId;
   if (!targetUserId) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    targetUserId = user?.id;
+    targetUserId = (await getCurrentUser())?.id;
   }
 
+  const currentYear = new Date().getFullYear();
   const empty: Stats = {
     lifetime: {
       totalMinutes: 0,
@@ -783,7 +761,7 @@ export async function getStats(overrideUserId?: string): Promise<Stats> {
       showsCompleted: 0,
     },
     thisYear: {
-      year: new Date().getFullYear(),
+      year: currentYear,
       totalMinutes: 0,
       movies: 0,
       episodes: 0,
@@ -794,162 +772,88 @@ export async function getStats(overrideUserId?: string): Promise<Stats> {
   };
   if (!targetUserId) return empty;
 
-  type StatsEntry = {
-    watched_at: string;
-    runtime_minutes: number | null;
+  type TotalsRow = {
+    total_minutes: number | string;
+    movies_watched: number | string;
+    episodes_watched: number | string;
+    shows_completed: number | string;
+    year_minutes: number | string;
+    year_movies: number | string;
+    year_episodes: number | string;
+    movie_minutes: number | string;
+    tv_minutes: number | string;
+  };
+  type TopShowRow = {
     media_id: string;
-    episode_id: string | null;
-    media: { id: string; title: string; poster_path: string | null; type: "movie" | "tv" } | null;
+    title: string;
+    poster_path: string | null;
+    tmdb_id: string | null;
+    episode_count: number | string;
+    minutes: number | string;
+  };
+  type OnThisDayRow = {
+    media_id: string;
+    title: string;
+    poster_path: string | null;
+    tmdb_id: string | null;
+    media_type: "movie" | "tv";
+    watched_at: string;
+    years_ago: number;
+    is_episode: boolean;
   };
 
-  const [entries, completedRes] = await Promise.all([
-    // MUST paginate — an unbounded select silently stops at PostgREST's
-    // 1000-row cap, which made every aggregate below wrong for any user past
-    // that many watched entries.
-    fetchAllRows<StatsEntry>((from, to) =>
-      supabase
-        .from("watched_entries")
-        .select(
-          `watched_at, runtime_minutes, media_id, episode_id,
-           media:media_id ( id, title, poster_path, type )`,
-        )
-        .eq("user_id", targetUserId)
-        .order("id", { ascending: true })
-        .range(from, to)
-        .overrideTypes<StatsEntry[]>(),
-    ),
-    supabase
-      .from("show_progress")
-      .select("media_id", { count: "exact", head: true })
-      .eq("user_id", targetUserId)
-      .eq("status", "completed"),
+  const [totalsRes, topShowsRes, onThisDayRes] = await Promise.all([
+    supabase.rpc("get_stats_totals", { p_user_id: targetUserId }),
+    supabase.rpc("get_stats_top_shows", { p_user_id: targetUserId, p_limit: 5 }),
+    supabase.rpc("get_on_this_day", { p_user_id: targetUserId, p_limit: 10 }),
   ]);
 
-  const showsCompleted = completedRes.count ?? 0;
+  // Every aggregate is bigint server-side and PostgREST may serialise bigint as
+  // a string, so coerce rather than trusting the wire type.
+  const n = (v: number | string | null | undefined) => Number(v ?? 0);
 
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth();
-  const currentDate = now.getDate();
+  const topShows = ((topShowsRes.data as TopShowRow[] | null) ?? []).map((r) => ({
+    mediaId: r.media_id,
+    title: r.title,
+    posterPath: r.poster_path,
+    tmdbId: r.tmdb_id,
+    episodeCount: n(r.episode_count),
+    minutes: n(r.minutes),
+  }));
+  const onThisDay = ((onThisDayRes.data as OnThisDayRow[] | null) ?? []).map(
+    (r) => ({
+      mediaId: r.media_id,
+      title: r.title,
+      posterPath: r.poster_path,
+      tmdbId: r.tmdb_id,
+      tmdbType: r.media_type,
+      watchedAt: r.watched_at,
+      yearsAgo: r.years_ago,
+      isEpisode: r.is_episode,
+    }),
+  );
 
-  let lifetimeMinutes = 0;
-  let moviesLifetime = 0;
-  let episodesLifetime = 0;
-  let thisYearMinutes = 0;
-  let thisYearMovies = 0;
-  let thisYearEpisodes = 0;
-  const byType = { movie: 0, tv: 0 };
-
-  const showAgg = new Map<
-    string,
-    {
-      title: string;
-      posterPath: string | null;
-      epCount: number;
-      minutes: number;
-    }
-  >();
-
-  type OnThisDayRow = {
-    mediaId: string;
-    title: string;
-    posterPath: string | null;
-    tmdbType: "movie" | "tv";
-    watchedAt: string;
-    yearsAgo: number;
-    isEpisode: boolean;
-  };
-  const onThisDay: OnThisDayRow[] = [];
-
-  for (const e of entries) {
-    const runtime = (e.runtime_minutes as number | null) ?? 0;
-    const isEpisode = e.episode_id !== null;
-    const media = e.media as unknown as {
-      title: string;
-      poster_path: string | null;
-      type: "movie" | "tv";
-    } | null;
-    if (!media) continue;
-
-    lifetimeMinutes += runtime;
-    if (isEpisode) episodesLifetime++;
-    else moviesLifetime++;
-
-    const watched = new Date(e.watched_at as string);
-    if (watched.getFullYear() === currentYear) {
-      thisYearMinutes += runtime;
-      if (isEpisode) thisYearEpisodes++;
-      else thisYearMovies++;
-    }
-
-    if (media.type === "movie") byType.movie += runtime;
-    else if (media.type === "tv") byType.tv += runtime;
-
-    if (isEpisode) {
-      const mid = e.media_id as string;
-      const cur = showAgg.get(mid) ?? {
-        title: media.title,
-        posterPath: media.poster_path,
-        epCount: 0,
-        minutes: 0,
-      };
-      cur.epCount++;
-      cur.minutes += runtime;
-      showAgg.set(mid, cur);
-    }
-
-    if (
-      watched.getMonth() === currentMonth &&
-      watched.getDate() === currentDate &&
-      watched.getFullYear() < currentYear
-    ) {
-      onThisDay.push({
-        mediaId: e.media_id as string,
-        title: media.title,
-        posterPath: media.poster_path,
-        tmdbType: media.type,
-        watchedAt: e.watched_at as string,
-        yearsAgo: currentYear - watched.getFullYear(),
-        isEpisode,
-      });
-    }
-  }
-
-  const topShowsSorted = [...showAgg.entries()]
-    .sort((a, b) => b[1].epCount - a[1].epCount)
-    .slice(0, 5);
-
-  const idsToResolve = new Set<string>();
-  topShowsSorted.forEach(([id]) => idsToResolve.add(id));
-  onThisDay.forEach((o) => idsToResolve.add(o.mediaId));
-  const tmdbMap = await getTmdbIdMap([...idsToResolve]);
+  // An account with no watched entries yields no totals row at all — that is
+  // the zero case, not an error.
+  const t = (totalsRes.data as TotalsRow[] | null)?.[0];
+  if (!t) return { ...empty, topShows, onThisDay };
 
   return {
     lifetime: {
-      totalMinutes: lifetimeMinutes,
-      moviesWatched: moviesLifetime,
-      episodesWatched: episodesLifetime,
-      showsCompleted,
+      totalMinutes: n(t.total_minutes),
+      moviesWatched: n(t.movies_watched),
+      episodesWatched: n(t.episodes_watched),
+      showsCompleted: n(t.shows_completed),
     },
     thisYear: {
       year: currentYear,
-      totalMinutes: thisYearMinutes,
-      movies: thisYearMovies,
-      episodes: thisYearEpisodes,
+      totalMinutes: n(t.year_minutes),
+      movies: n(t.year_movies),
+      episodes: n(t.year_episodes),
     },
-    byType,
-    topShows: topShowsSorted.map(([mediaId, s]) => ({
-      mediaId,
-      title: s.title,
-      posterPath: s.posterPath,
-      tmdbId: tmdbMap.get(mediaId) ?? null,
-      episodeCount: s.epCount,
-      minutes: s.minutes,
-    })),
-    onThisDay: onThisDay
-      .sort((a, b) => a.yearsAgo - b.yearsAgo)
-      .slice(0, 10)
-      .map((o) => ({ ...o, tmdbId: tmdbMap.get(o.mediaId) ?? null })),
+    byType: { movie: n(t.movie_minutes), tv: n(t.tv_minutes) },
+    topShows,
+    onThisDay,
   };
 }
 
@@ -981,9 +885,7 @@ export type TierBoardData = {
  */
 export async function getTierBoard(): Promise<TierBoardData> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
   const empty: TierBoardData = {
     items: [],
@@ -997,7 +899,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
         .from("tier_assignments")
         .select(
           `media_id, tier,
-           media:media_id ( id, title, poster_path, type, release_year )`,
+           media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
         )
         .eq("user_id", user.id),
       supabase
@@ -1010,7 +912,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
           .from("watched_entries")
           .select(
             `media_id,
-             media:media_id ( id, title, poster_path, type, release_year )`,
+             media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
           )
           .eq("user_id", user.id)
           .is("episode_id", null)
@@ -1023,7 +925,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
           .from("show_progress")
           .select(
             `media_id,
-             media:media_id ( id, title, poster_path, type, release_year )`,
+             media:media_id ( id, title, poster_path, type, release_year, tmdb_id )`,
           )
           .eq("user_id", user.id)
           .order("media_id", { ascending: true })
@@ -1038,6 +940,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
     poster_path: string | null;
     type: "movie" | "tv";
     release_year: number | null;
+    tmdb_id: string | null;
   };
 
   const assignedIds = new Set<string>();
@@ -1052,7 +955,7 @@ export async function getTierBoard(): Promise<TierBoardData> {
       mediaId: row.media_id as string,
       title: m.title,
       posterPath: m.poster_path,
-      tmdbId: null, // filled in after batched lookup below
+      tmdbId: m.tmdb_id,
       tmdbType: m.type,
       releaseYear: m.release_year,
       tier: row.tier as TierKey,
@@ -1075,17 +978,11 @@ export async function getTierBoard(): Promise<TierBoardData> {
       mediaId: id,
       title: m.title,
       posterPath: m.poster_path,
-      tmdbId: null,
+      tmdbId: m.tmdb_id,
       tmdbType: m.type,
       releaseYear: m.release_year,
       tier: null,
     });
-  }
-
-  // Fill tmdb ids in one batched lookup.
-  const tmdbMap = await getTmdbIdMap(items.map((i) => i.mediaId));
-  for (const item of items) {
-    item.tmdbId = tmdbMap.get(item.mediaId) ?? null;
   }
 
   const l = labelsRes.data;
@@ -1123,115 +1020,216 @@ export type PublicProfileCounts = {
 };
 
 /**
- * Compact numbers for the public profile header row.
+ * Compact numbers for the public profile header row. One RPC.
+ *
+ * The hours figure used to be a JS-side sum over a paginated read of every
+ * watched entry — four queries plus the whole runtime column over the wire for
+ * one number. `get_profile_counts` does all four counts server-side; the
+ * integer division for hours matches the old `Math.floor(minutes / 60)`.
  */
 export async function getPublicProfileCounts(
   userId: string,
 ): Promise<PublicProfileCounts> {
   const supabase = await createClient();
-  const [showsRes, episodesRes, runtimeRows, listsRes] = await Promise.all([
-    supabase
-      .from("show_progress")
-      .select("media_id", { count: "exact", head: true })
-      .eq("user_id", userId),
-    supabase
-      .from("watched_entries")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .not("episode_id", "is", null),
-    // Paginated — the hours figure is a JS-side sum, so a truncated read
-    // silently under-reports it.
-    fetchAllRows<{ runtime_minutes: number | null }>((from, to) =>
-      supabase
-        .from("watched_entries")
-        .select("runtime_minutes")
-        .eq("user_id", userId)
-        .order("id", { ascending: true })
-        .range(from, to)
-        .overrideTypes<{ runtime_minutes: number | null }[]>(),
-    ),
-    supabase
-      .from("custom_lists")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .eq("is_public", true),
-  ]);
+  const { data, error } = await supabase.rpc("get_profile_counts", {
+    p_user_id: userId,
+  });
 
-  const totalMinutes = runtimeRows.reduce(
-    (sum, r) => sum + (r.runtime_minutes ?? 0),
-    0,
-  );
+  type Row = {
+    shows: number | string;
+    episodes: number | string;
+    hours: number | string;
+    lists: number | string;
+  };
+  const row = (data as Row[] | null)?.[0];
+  if (error || !row) return { shows: 0, episodes: 0, hours: 0, lists: 0 };
 
+  const n = (v: number | string | null | undefined) => Number(v ?? 0);
   return {
-    shows: showsRes.count ?? 0,
-    episodes: episodesRes.count ?? 0,
-    hours: Math.floor(totalMinutes / 60),
-    lists: listsRes.count ?? 0,
+    shows: n(row.shows),
+    episodes: n(row.episodes),
+    hours: n(row.hours),
+    lists: n(row.lists),
   };
 }
 
 export type ActivityItem = {
+  /** Most recent watch in the group. */
   watchedAt: string;
   mediaId: string;
   title: string;
   posterPath: string | null;
   tmdbType: "movie" | "tv";
   tmdbId: string | null;
-  episode: { seasonNumber: number; episodeNumber: number; name: string | null } | null;
+  /** null for a movie. */
+  episodes: {
+    count: number;
+    firstSeason: number;
+    firstEpisode: number;
+    lastSeason: number;
+    lastEpisode: number;
+    /** True when the group covers one season with no gaps — "E1–E6" is honest. */
+    contiguous: boolean;
+    /** Episode name, only when the group is a single episode. */
+    singleName: string | null;
+  } | null;
 };
 
 /**
- * Most recent watched entries for a user's public profile timeline.
+ * Recent activity for a public profile, **grouped into one row per show**.
+ *
+ * One row per `watched_entries` row is unusable: marking a season writes
+ * hundreds of rows sharing a single `watched_at`, so a 12-row feed showed 12
+ * episodes of one show and nothing else. Same failure that shaped
+ * `getRecentlyWatched` — see its comment.
+ *
+ * Consecutive entries for the same title collapse into a group, which the UI
+ * renders as "S1 · E1–E6". Grouping is by *adjacency*, not by title overall:
+ * watching show A, then B, then A again is genuinely three entries in a
+ * timeline, and flattening that would misrepresent the history.
+ *
+ * COST: reads a bounded window of raw rows and groups in JS, because PostgREST
+ * has aggregates disabled on this project (verified) and can't `DISTINCT` — so
+ * "the last N shows" isn't expressible over REST. The window is capped at one
+ * request's worth. A single enormous binge can therefore yield fewer than
+ * `limit` groups, which is a deliberate bound rather than an unbounded read; the
+ * proper fix is an RPC with a gaps-and-islands window function, noted in
+ * `OPTIMIZATIONS.md`.
  */
 export async function getRecentActivity(
   userId: string,
   limit = 15,
 ): Promise<ActivityItem[]> {
   const supabase = await createClient();
+
+  // Enough raw rows that a normal binge still leaves room for other titles,
+  // while staying inside a single PostgREST response.
+  const WINDOW = 400;
+
   const { data } = await supabase
     .from("watched_entries")
     .select(
       `watched_at, media_id, episode_id,
-       media:media_id ( id, title, poster_path, type ),
+       media:media_id ( id, title, poster_path, type, tmdb_id ),
        episode:episode_id ( episode_number, name,
          seasons ( season_number ) )`,
     )
     .eq("user_id", userId)
     .order("watched_at", { ascending: false })
-    .limit(limit);
+    .limit(WINDOW);
 
   if (!data) return [];
-  const mediaIds = [...new Set(data.map((r) => r.media_id as string))];
-  const tmdbMap = await getTmdbIdMap(mediaIds);
 
-  return data.map((r) => {
-    const media = r.media as unknown as {
+  type Row = {
+    watched_at: string;
+    media_id: string;
+    episode_id: string | null;
+    media: {
       title: string;
       poster_path: string | null;
       type: "movie" | "tv";
-    };
-    const ep = r.episode as unknown as {
+      tmdb_id: string | null;
+    } | null;
+    episode: {
       episode_number: number;
       name: string | null;
-      seasons: { season_number: number };
+      seasons: { season_number: number } | null;
     } | null;
+  };
 
-    return {
-      watchedAt: r.watched_at as string,
-      mediaId: r.media_id as string,
+  const groups: ActivityItem[] = [];
+  // Accumulates the (season, episode) pairs of the group being built.
+  let pending: { seasons: number[]; episodes: number[]; names: (string | null)[] } | null =
+    null;
+  let seenEpisodeIds = new Set<string>();
+
+  const flush = () => {
+    if (!pending || groups.length === 0) return;
+    const target = groups[groups.length - 1];
+    const { seasons, episodes, names } = pending;
+    if (episodes.length > 0) {
+      // Sort ascending so "first" and "last" are chronological in show order,
+      // not in the order they happen to have been marked.
+      const order = episodes
+        .map((e, i) => ({ s: seasons[i], e }))
+        .sort((a, b) => (a.s !== b.s ? a.s - b.s : a.e - b.e));
+      const first = order[0];
+      const last = order[order.length - 1];
+      const singleSeason = first.s === last.s;
+      const distinct = new Set(order.map((o) => `${o.s}-${o.e}`)).size;
+      target.episodes = {
+        count: distinct,
+        firstSeason: first.s,
+        firstEpisode: first.e,
+        lastSeason: last.s,
+        lastEpisode: last.e,
+        contiguous:
+          singleSeason && distinct === last.e - first.e + 1,
+        singleName: distinct === 1 ? (names[0] ?? null) : null,
+      };
+    }
+    pending = null;
+  };
+
+  for (const raw of data as unknown as Row[]) {
+    const media = raw.media;
+    if (!media) continue;
+
+    const prev = groups[groups.length - 1];
+    const isEpisode = raw.episode_id !== null;
+
+    // Same title as the row before it → extend that group. Movies never merge:
+    // two viewings of the same film are two events.
+    const extend =
+      prev !== undefined &&
+      prev.mediaId === raw.media_id &&
+      isEpisode &&
+      prev.episodes !== null;
+
+    if (extend) {
+      if (raw.episode_id && seenEpisodeIds.has(raw.episode_id)) continue;
+      if (raw.episode_id) seenEpisodeIds.add(raw.episode_id);
+      pending!.seasons.push(raw.episode?.seasons?.season_number ?? 0);
+      pending!.episodes.push(raw.episode?.episode_number ?? 0);
+      pending!.names.push(raw.episode?.name ?? null);
+      continue;
+    }
+
+    flush();
+    if (groups.length >= limit) break;
+
+    seenEpisodeIds = new Set(raw.episode_id ? [raw.episode_id] : []);
+    groups.push({
+      watchedAt: raw.watched_at,
+      mediaId: raw.media_id,
       title: media.title,
       posterPath: media.poster_path,
       tmdbType: media.type,
-      tmdbId: tmdbMap.get(r.media_id as string) ?? null,
-      episode: ep
+      tmdbId: media.tmdb_id,
+      // Placeholder that flush() fills in; a movie stays null.
+      episodes: isEpisode
         ? {
-            seasonNumber: ep.seasons?.season_number ?? 0,
-            episodeNumber: ep.episode_number,
-            name: ep.name,
+            count: 1,
+            firstSeason: 0,
+            firstEpisode: 0,
+            lastSeason: 0,
+            lastEpisode: 0,
+            contiguous: true,
+            singleName: null,
           }
         : null,
-    };
-  });
+    });
+    if (isEpisode) {
+      pending = {
+        seasons: [raw.episode?.seasons?.season_number ?? 0],
+        episodes: [raw.episode?.episode_number ?? 0],
+        names: [raw.episode?.name ?? null],
+      };
+    }
+  }
+  flush();
+
+  return groups.slice(0, limit);
 }
 
 export type PublicListSummary = {
@@ -1246,6 +1244,18 @@ export type PublicListSummary = {
 /**
  * Public custom lists for a user's profile page. Also fetches up to 4 cover
  * posters per list (rendered as a 2×2 mosaic in the UI).
+ *
+ * Two queries total, not two per list. The old shape was an N+1 — a count and a
+ * poster fetch for every list — so a profile with 12 lists cost 25 round-trips.
+ * Now the items for every list come back in one read scoped to those list ids,
+ * and both the per-list count and the first four posters are derived from it.
+ *
+ * `count` therefore becomes a JS tally rather than a server-side `head: true`.
+ * That's the trade: PostgREST won't do `GROUP BY list_id` (aggregates are
+ * disabled on this project, verified against the live API), so a grouped count
+ * would need an RPC. Reading the rows is the cheaper move at list sizes a human
+ * curates — and it's paginated, so a big list degrades into extra requests
+ * rather than a wrong number.
  */
 export async function getPublicListsByUser(
   userId: string,
@@ -1260,37 +1270,48 @@ export async function getPublicListsByUser(
 
   if (!lists || lists.length === 0) return [];
 
-  return Promise.all(
-    lists.map(async (list) => {
-      const listId = list.id as string;
-      const [{ count }, { data: items }] = await Promise.all([
-        supabase
-          .from("custom_list_items")
-          .select("media_id", { count: "exact", head: true })
-          .eq("list_id", listId),
-        supabase
-          .from("custom_list_items")
-          .select(`media:media_id ( poster_path )`)
-          .eq("list_id", listId)
-          .order("position", { ascending: true })
-          .limit(4),
-      ]);
+  const listIds = lists.map((l) => l.id as string);
 
-      const coverPosters: (string | null)[] = (items ?? []).map((i) => {
-        const m = i.media as unknown as { poster_path: string | null } | null;
-        return m?.poster_path ?? null;
-      });
-
-      return {
-        id: listId,
-        name: list.name as string,
-        description: list.description as string | null,
-        slug: list.slug as string,
-        itemCount: count ?? 0,
-        coverPosters,
-      };
-    }),
+  type ItemRow = {
+    list_id: string;
+    position: number | null;
+    media: { poster_path: string | null } | null;
+  };
+  const items = await fetchAllRows<ItemRow>((from, to) =>
+    supabase
+      .from("custom_list_items")
+      .select(`list_id, position, media:media_id ( poster_path )`)
+      .in("list_id", listIds)
+      .order("list_id", { ascending: true })
+      .order("position", { ascending: true })
+      .range(from, to)
+      .overrideTypes<ItemRow[]>(),
   );
+
+  const countByList = new Map<string, number>();
+  const postersByList = new Map<string, (string | null)[]>();
+  for (const it of items) {
+    countByList.set(it.list_id, (countByList.get(it.list_id) ?? 0) + 1);
+    // Rows arrive ordered by position within each list, so the first four we
+    // see are the four the mosaic wants.
+    const posters = postersByList.get(it.list_id) ?? [];
+    if (posters.length < 4) {
+      posters.push(it.media?.poster_path ?? null);
+      postersByList.set(it.list_id, posters);
+    }
+  }
+
+  return lists.map((list) => {
+    const listId = list.id as string;
+    return {
+      id: listId,
+      name: list.name as string,
+      description: list.description as string | null,
+      slug: list.slug as string,
+      itemCount: countByList.get(listId) ?? 0,
+      coverPosters: postersByList.get(listId) ?? [],
+    };
+  });
 }
 
 export const BANNER_GRADIENTS: Record<string, string> = {
@@ -1328,161 +1349,73 @@ export type ContinueWatchingItem = {
 };
 
 /**
- * Everything the /home Continue Watching section needs, in a couple of
- * bounded round-trips. We deliberately don't do this via a Postgres RPC yet
- * — the join volume is small (≤12 shows × ~50 eps) and the shape of the
- * query is still stabilizing.
+ * Everything the /home Continue Watching section needs, in ONE query.
+ *
+ * This was the last P1 item in `OPTIMIZATIONS.md`. It used to be one query per
+ * show, each fetching *every* episode of that show, then finding the next
+ * unwatched one in JS — measured at 5 queries / 171 episode rows / 32 KB to
+ * extract 5 episodes. The Library "Watching" tab calls this with limit=50, so
+ * the worst case was 50 queries and several thousand rows for one page view.
+ *
+ * `get_continue_watching` does the whole thing server-side with a lateral join,
+ * keyed off a row-constructor comparison — `(season, episode) > (current_season,
+ * current_episode)` is exactly the lexicographic "next episode" the JS
+ * sort-then-find implemented. See the migration for why this is an RPC rather
+ * than a denormalized `show_progress.next_episode_id`: the episode catalogue
+ * changes independently of the user's marks, so a stored pointer would silently
+ * strand a show on "all caught up" forever.
+ *
+ * The RPC filters on `auth.uid()` itself, so there's no user id to pass; it's
+ * `security invoker`, so RLS applies exactly as it did to the queries above.
  */
 export async function getContinueWatching(
   limit = 12,
 ): Promise<ContinueWatchingItem[]> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return [];
 
-  // 1) Progress rows + basic media info.
-  const { data: progressRows, error: progressError } = await supabase
-    .from("show_progress")
-    .select(
-      `
-      media_id,
-      current_season,
-      current_episode,
-      status_changed_at,
-      media:media_id (
-        id,
-        title,
-        poster_path,
-        type,
-        episode_count
-      )
-    `,
-    )
-    .eq("user_id", user.id)
-    .eq("status", "watching")
-    .order("status_changed_at", { ascending: false })
-    .limit(limit);
+  type Row = {
+    media_id: string;
+    title: string;
+    poster_path: string | null;
+    tmdb_id: string | null;
+    current_season: number | null;
+    current_episode: number | null;
+    total_episodes: number | null;
+    total_watched: number | string | null;
+    next_episode_id: string | null;
+    next_season_number: number | null;
+    next_episode_number: number | null;
+    next_name: string | null;
+    next_runtime_minutes: number | null;
+  };
 
-  if (progressError || !progressRows || progressRows.length === 0) return [];
+  const { data, error } = await supabase.rpc("get_continue_watching", {
+    p_limit: limit,
+  });
 
-  const mediaIds = progressRows.map((r) => r.media_id);
+  if (error || !data) return [];
 
-  // 2) TMDB external IDs (for /title/tv/{id} link building).
-  const { data: extIds } = await supabase
-    .from("media_external_ids")
-    .select("media_id, external_id")
-    .eq("source", "tmdb")
-    .in("media_id", mediaIds);
-  const tmdbMap = new Map<string, string>();
-  for (const e of extIds ?? []) {
-    tmdbMap.set(e.media_id as string, e.external_id as string);
-  }
-
-  // 3) Watched-episode counts per show (for the "totalWatched" number
-  //    surfaced on the card without a second aggregation query per row).
-  // Paginated: 12 shows at a couple hundred episodes each blows past the
-  // 1000-row cap, and this count is shown to the user ("N of M watched"), so
-  // a truncated read would under-report real progress.
-  const watchedRows = await fetchAllRows<{ media_id: string }>((from, to) =>
-    supabase
-      .from("watched_entries")
-      .select("media_id")
-      .eq("user_id", user.id)
-      .in("media_id", mediaIds)
-      .not("episode_id", "is", null)
-      .order("id", { ascending: true })
-      .range(from, to)
-      .overrideTypes<{ media_id: string }[]>(),
-  );
-  const watchedCounts = new Map<string, number>();
-  for (const w of watchedRows) {
-    watchedCounts.set(w.media_id, (watchedCounts.get(w.media_id) ?? 0) + 1);
-  }
-
-  // 4) Per-show "what's the next episode after where they are?" lookup.
-  //    One query per show; capped at `limit`. Each pulls a small episode set,
-  //    sort-and-find happens in JS to avoid Supabase-JS's awkward joined-
-  //    column ordering.
-  const results: ContinueWatchingItem[] = await Promise.all(
-    progressRows.map(async (row) => {
-      const media = row.media as unknown as {
-        id: string;
-        title: string;
-        poster_path: string | null;
-        type: string;
-        episode_count: number | null;
-      };
-      const currentSeason = row.current_season ?? 1;
-      const currentEpisode = row.current_episode ?? 0;
-
-      const { data: allEps } = await supabase
-        .from("episodes")
-        .select(
-          `id, episode_number, name, runtime_minutes,
-           seasons!inner ( season_number, media_id )`,
-        )
-        .eq("seasons.media_id", row.media_id);
-
-      const sorted = (allEps ?? [])
-        .map((e) => {
-          // `episodes.season_id → seasons.id` is many-to-one, so PostgREST
-          // embeds `seasons` as a single object, NOT an array. Indexing [0]
-          // here silently produced season_number 0 for every episode, which
-          // made the "next episode" lookup below never match — every show
-          // read as "all caught up". Array branch kept as a cheap guard.
-          const embedded = (e as unknown as {
-            seasons:
-              | { season_number: number }
-              | { season_number: number }[]
-              | null;
-          }).seasons;
-          const season = Array.isArray(embedded) ? embedded[0] : embedded;
-
-          return {
-            id: e.id as string,
-            episode_number: e.episode_number as number,
-            name: (e.name as string | null) ?? null,
-            runtime_minutes: (e.runtime_minutes as number | null) ?? null,
-            season_number: season?.season_number ?? 0,
-          };
-        })
-        .sort((a, b) =>
-          a.season_number !== b.season_number
-            ? a.season_number - b.season_number
-            : a.episode_number - b.episode_number,
-        );
-
-      const next = sorted.find(
-        (e) =>
-          e.season_number > currentSeason ||
-          (e.season_number === currentSeason &&
-            e.episode_number > currentEpisode),
-      );
-
-      return {
-        mediaId: row.media_id as string,
-        title: media.title,
-        posterPath: media.poster_path,
-        tmdbId: tmdbMap.get(row.media_id) ?? null,
-        tmdbType: "tv" as const,
-        currentSeason: row.current_season,
-        currentEpisode: row.current_episode,
-        totalEpisodes: media.episode_count ?? sorted.length,
-        totalWatched: watchedCounts.get(row.media_id) ?? 0,
-        next: next
-          ? {
-              episodeId: next.id,
-              seasonNumber: next.season_number,
-              episodeNumber: next.episode_number,
-              name: next.name,
-              runtimeMinutes: next.runtime_minutes,
-            }
-          : null,
-      };
-    }),
-  );
-
-  return results;
+  return (data as Row[]).map((r) => ({
+    mediaId: r.media_id,
+    title: r.title,
+    posterPath: r.poster_path,
+    tmdbId: r.tmdb_id,
+    tmdbType: "tv" as const,
+    currentSeason: r.current_season,
+    currentEpisode: r.current_episode,
+    totalEpisodes: r.total_episodes ?? 0,
+    // count(*) is bigint; PostgREST may hand it back as a string.
+    totalWatched: Number(r.total_watched ?? 0),
+    next: r.next_episode_id
+      ? {
+          episodeId: r.next_episode_id,
+          seasonNumber: r.next_season_number ?? 0,
+          episodeNumber: r.next_episode_number ?? 0,
+          name: r.next_name,
+          runtimeMinutes: r.next_runtime_minutes,
+        }
+      : null,
+  }));
 }

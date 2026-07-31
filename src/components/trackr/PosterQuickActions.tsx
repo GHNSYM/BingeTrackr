@@ -55,6 +55,10 @@ export function PosterQuickActions({
   };
 
   const toggleWatchlist = () => {
+    // Finished titles can't be watchlisted — the two states are exclusive, and
+    // the server refuses the write. Guard here too so the icon never flashes on
+    // and snap back, which read as a bug.
+    if (watched && !watchlisted) return;
     const next = !watchlisted;
     setWatchlisted(next);
     startTransition(async () => {
@@ -104,8 +108,15 @@ export function PosterQuickActions({
       <QuickButton
         active={watchlisted}
         pending={pending}
+        disabled={watched && !watchlisted}
         onClick={toggleWatchlist}
-        label={watchlisted ? "Remove from watchlist" : "Add to watchlist"}
+        label={
+          watchlisted
+            ? "Remove from watchlist"
+            : watched
+              ? "Already watched — un-mark it to add to your watchlist"
+              : "Add to watchlist"
+        }
       >
         {watchlisted ? (
           <BookmarkCheck className="w-4 h-4 animate-pop" />
@@ -120,12 +131,14 @@ export function PosterQuickActions({
 function QuickButton({
   active,
   pending,
+  disabled = false,
   onClick,
   label,
   children,
 }: {
   active: boolean;
   pending: boolean;
+  disabled?: boolean;
   onClick: () => void;
   label: string;
   children: React.ReactNode;
@@ -134,8 +147,9 @@ function QuickButton({
     <button
       type="button"
       onClick={onClick}
-      disabled={pending}
+      disabled={pending || disabled}
       aria-pressed={active}
+      aria-disabled={disabled || undefined}
       aria-label={label}
       title={label}
       // 8→9 so both buttons still fit a ~76px poster at the Small setting.

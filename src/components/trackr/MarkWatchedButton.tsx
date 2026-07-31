@@ -1,48 +1,33 @@
 "use client";
 
 import { Check } from "lucide-react";
-import { useOptimistic, useTransition } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  markMovieWatchedAction,
-  unmarkMovieWatchedAction,
-} from "@/lib/tracking/actions";
 
 type Props = {
-  mediaId: string;
-  initiallyWatched: boolean;
+  watched: boolean;
+  pending: boolean;
+  onToggle: () => void;
 };
 
 /**
- * Toggle button for a movie's watched state. Uses useOptimistic so the flip
- * is instant — the server action races the UI, and the paint-time flicker
- * that would normally accompany a round-trip is gone.
+ * Toggle button for a movie's watched state. **Controlled** — the parent owns
+ * the state, because watched and watchlisted are mutually exclusive and both
+ * buttons have to move together. When this held its own `useOptimistic`, marking
+ * a movie watched left the watchlist button still reading "In watchlist" even
+ * though the server had just evicted it.
+ *
+ * See `TitleTrackActions`, which owns the optimistic flip.
  */
-export function MarkWatchedButton({ mediaId, initiallyWatched }: Props) {
-  const [optimisticWatched, setOptimisticWatched] =
-    useOptimistic(initiallyWatched);
-  const [pending, startTransition] = useTransition();
-
-  const toggle = () => {
-    startTransition(async () => {
-      const next = !optimisticWatched;
-      setOptimisticWatched(next);
-      if (next) {
-        await markMovieWatchedAction(mediaId);
-      } else {
-        await unmarkMovieWatchedAction(mediaId);
-      }
-    });
-  };
-
+export function MarkWatchedButton({ watched, pending, onToggle }: Props) {
   return (
     <Button
-      onClick={toggle}
+      onClick={onToggle}
       disabled={pending}
-      variant={optimisticWatched ? "outline" : "default"}
+      variant={watched ? "outline" : "default"}
       className="min-w-[140px]"
+      aria-pressed={watched}
     >
-      {optimisticWatched ? (
+      {watched ? (
         <>
           <Check className="w-4 h-4 animate-pop" />
           Watched

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { createClient } from "@/lib/supabase/server";
 import { getMovie, getTv, type TmdbMediaType } from "@/lib/tmdb/client";
 import { upsertMovie, upsertTv } from "@/lib/tmdb/upsert";
@@ -18,9 +19,7 @@ import {
  * Those surfaces only know a title by its TMDB id, while every tracking table
  * keys off our internal `media.id`. So each action resolves TMDB → internal
  * first, caching the title on the way in (cache-on-touch, same as a detail
- * page visit). We refetch details server-side rather than trusting a payload
- * from the client — otherwise a caller could write arbitrary rows into
- * `media`.
+ * page visit).
  *
  * Both actions return the FULL resulting state, not just the flag they
  * touched: marking something watched also evicts it from the watchlist, and
@@ -33,7 +32,37 @@ export type QuickActionResult =
 
 type Target = { tmdbId: number | string; tmdbType: TmdbMediaType };
 
+/**
+ * TMDB id → internal `media.id`.
+ *
+ * Fast path: if we've already cached this title, `media_external_ids` has the
+ * mapping and we need neither the TMDB fetch nor the `media` UPDATE that
+ * `upsertMedia` would do. That's the common case on Discover — most clicked
+ * posters are ones someone has already touched.
+ *
+ * `(source, external_id, media_type)` is the primary key, so this is a single
+ * indexed lookup that cannot return a row of the wrong type. It used to need a
+ * join to `media` plus a post-hoc type check, because the narrower PK let movie
+ * 550 and show 550 collide — that's fixed in the schema now, so the guard is
+ * gone rather than merely working.
+ *
+ * Slow path: fetch details server-side and cache-on-touch. We refetch rather
+ * than trusting a payload from the client — otherwise a caller could write
+ * arbitrary rows into `media` — but that reasoning only applies when we
+ * actually need to insert.
+ */
 async function resolveMediaId({ tmdbId, tmdbType }: Target): Promise<string> {
+  const supabase = await createClient();
+  const { data: cached } = await supabase
+    .from("media_external_ids")
+    .select("media_id")
+    .eq("source", "tmdb")
+    .eq("external_id", String(tmdbId))
+    .eq("media_type", tmdbType)
+    .maybeSingle();
+
+  if (cached?.media_id) return cached.media_id as string;
+
   if (tmdbType === "movie") return upsertMovie(await getMovie(tmdbId));
   return upsertTv(await getTv(tmdbId));
 }
@@ -91,9 +120,7 @@ export async function quickToggleWatchlistAction(
   try {
     const mediaId = await resolveMediaId(target);
     const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const user = await getCurrentUser();
     if (!user) return { error: "not-signed-in" };
 
     const result = await toggleWatchlistAction(mediaId);
@@ -122,9 +149,7 @@ export async function quickToggleWatchedAction(
   try {
     const mediaId = await resolveMediaId(target);
     const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const user = await getCurrentUser();
     if (!user) return { error: "not-signed-in" };
 
     const before = await readState(

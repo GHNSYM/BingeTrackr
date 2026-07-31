@@ -4,13 +4,26 @@ Version-controlled SQL for BingeTrackr's Postgres schema. Two paths to apply —
 
 ## Migrations
 
-| File | What |
-|---|---|
-| `20260716120001_initial_schema.sql` | Media catalog + user data + tiers |
-| `20260716120002_rls_policies.sql` | Row-level security on every table |
-| `20260716120003_auto_profile_trigger.sql` | Auto-create profile on signup |
+| File | What | Applied? |
+|---|---|---|
+| `20260716120001_initial_schema.sql` | Media catalog + user data + tiers | yes |
+| `20260716120002_rls_policies.sql` | Row-level security on every table | yes |
+| `20260716120003_auto_profile_trigger.sql` | Auto-create profile on signup | yes |
+| `20260731120001_media_external_ids_type.sql` | PK collision fix (OPTIMIZATIONS #9) | yes |
+| `20260731120002_media_tmdb_id_cache.sql` | `media.tmdb_id` cache column (#7) | yes |
+| `20260731120003_continue_watching_rpc.sql` | `get_continue_watching()` (#1) | yes |
+| `20260731120004_stats_rpcs.sql` | Stats / on-this-day / profile-count RPCs (#4) | yes |
 
-Apply in numeric order — the RLS migration depends on tables from the schema migration.
+Apply in numeric order — the RLS migration depends on tables from the schema
+migration, and `…0003` depends on `…0002` which depends on `…0001`.
+
+Two invariants the 2026-07-31 batch introduced, both enforced by the database:
+
+- `media_external_ids.media_type` is **NOT NULL** and carries a composite FK to
+  `media(id, type)`. Every insert must supply it, and it must match the media
+  row's type.
+- `media.tmdb_id` is a **trigger-maintained cache** of the `source = 'tmdb'`
+  mapping. Never write it directly.
 
 ---
 

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { createClient } from "@/lib/supabase/server";
 
 export type ActionState = { error?: string; message?: string } | null;
@@ -123,9 +124,7 @@ export async function checkUsernameAvailable(
     // Their own placeholder row doesn't collide when they're claiming — but
     // this check runs BEFORE they claim, so we look up by target username.
     // If found, it's someone else's.
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const user = await getCurrentUser();
     if (user && data.id === user.id) return { ok: true }; // idempotent self-claim
     return { ok: false, reason: "taken" };
   }
@@ -145,9 +144,7 @@ export async function claimUsernameAction(
   }
 
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "You're not signed in." };
 
   const { error } = await supabase

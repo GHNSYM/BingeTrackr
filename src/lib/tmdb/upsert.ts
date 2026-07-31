@@ -85,11 +85,16 @@ async function upsertMedia(args: UpsertArgs): Promise<string> {
   const admin = createAdminClient();
 
   // Fast path: do we already have a media row for this TMDB id?
+  //
+  // `media_type` is part of the primary key — TMDB numbers movies and shows in
+  // separate namespaces, so without it movie 550 and show 550 resolved to one
+  // row and this lookup could return, and then overwrite, the wrong title.
   const { data: existing } = await admin
     .from("media_external_ids")
     .select("media_id")
     .eq("source", "tmdb")
     .eq("external_id", String(args.tmdbId))
+    .eq("media_type", args.type)
     .maybeSingle();
 
   if (existing?.media_id) {
@@ -144,6 +149,9 @@ async function upsertMedia(args: UpsertArgs): Promise<string> {
       media_id: media.id,
       source: "tmdb",
       external_id: String(args.tmdbId),
+      // NOT NULL, and a composite FK checks it against media.type. Inserting
+      // the media row above with a different type would be rejected here.
+      media_type: args.type,
     });
 
   if (extError) {

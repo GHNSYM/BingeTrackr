@@ -85,10 +85,11 @@ The full schema lives in `supabase/migrations/` — read those files as source o
 
 - **Single `watched_entries` table** with nullable `episode_id`. Movie watch = `episode_id IS NULL`. `runtime_minutes` is denormalized onto the row so hours-watched stats are a single `SUM` with no joins.
 - **Separate `show_progress` table**, one row per (user, show). Don't derive resume-point from `MAX(watched_at)` — users need explicit control (they jump around, mark random eps).
-- **Internal `media.id`** (uuid) with `media_external_ids` mapping to TMDB / AniList / IMDb / MAL. Never use TMDB IDs as primary keys — anime reconciliation depends on this indirection.
+- **Internal `media.id`** (uuid) with `media_external_ids` mapping to TMDB / AniList / IMDb / MAL. Never use TMDB IDs as primary keys — anime reconciliation depends on this indirection. That table is keyed `(source, external_id, media_type)`: TMDB numbers movies and shows separately, so the type is part of the identity, and a composite FK to `media(id, type)` keeps the denormalized copy honest. `media.tmdb_id` is a **trigger-maintained cache** of the TMDB mapping so grids don't need a second round-trip — read it from the `media` join, never write it.
 - **Cache TMDB lazily** — only insert `media` rows for titles users have touched. Do NOT bulk-import TMDB's catalog (violates ToS + kills the free tier).
 - **PostgREST silently truncates reads at 1000 rows** (`db-max-rows`). It does not error — you just get 1000 rows and no signal there were more. This produced wrong stats (a user with 1490 watched entries had hours and per-show counts computed from an arbitrary 1000 of them). Any query that can return more than a few hundred rows MUST go through `fetchAllRows` in `src/lib/supabase/paginate.ts`, with a stable `.order()` on a unique column. Note `count: "exact", head: true` is unaffected — PostgREST computes counts server-side.
 - **RLS pattern:** owner always reads/writes own; user-content tables (watched, show_progress, ratings, tiers, public custom_lists) are readable by anyone if the user's profile `is_public`. **Watchlist is owner-only-read even on public profiles** — deliberate privacy call.
+- **Watched and watchlisted are mutually exclusive, and it's enforced in BOTH directions.** Finishing something evicts it from the watchlist (`dropFromWatchlist`); adding a *finished* title to the watchlist is refused (`toggleWatchlistAction` returns `already-watched`). "Finished" means a watched movie or a series set to `completed` — a half-watched series legitimately stays on the watchlist. This was one-directional until 2026-08-01, which let the DB hold both while `getWatchlistItems` hid the row at read time, so the poster buttons lit up both. Don't re-open that gap: enforce writes, don't paper over it on read.
 - **Auto-profile trigger** on `auth.users` insert creates a `profiles` row with a placeholder `username` (e.g. `useraf12b8c9`). Onboarding lets the user claim a real handle.
 
 ## Migrations
@@ -108,7 +109,8 @@ a feature to save a request; fix the query instead.
 
 - **AI-accelerated, not AI-autopilot.** Every merged file must be defensible line-by-line. Schema design + RLS + hard architectural decisions are the user's; boilerplate + component scaffolds can be AI-generated.
 - **Optimistic UI everywhere.** Mark-watched cannot wait for a round-trip. Use `useOptimistic`.
-- **No spinners.** Skeleton screens for every load.
+- **No spinners.** Skeleton screens for every load. Primitives live in `src/components/trackr/LoadingSkeleton.tsx`; every dynamic route has a `loading.tsx` built from them. A skeleton must occupy the same box as the content it replaces — one that reflows on swap is worse than none.
+- **Navigation must acknowledge the click instantly.** Every dynamic route needs a `loading.tsx`, and slow sections stream behind `<Suspense>`. The rule on a page like `title/[type]/[id]`: an `await` at the top level delays the hero for every visitor, so if data isn't needed to render the hero, it belongs in a child component behind a Suspense boundary. Read the comment at the top of that page before adding one.
 - **Test glassmorphism perf on a real ₹15-20k Android before shipping.** The `prefers-reduced-transparency` fallback is not enough by itself.
 
 ## Environment
@@ -123,5 +125,13 @@ Copy `.env.local.example` → `.env.local` and fill in the Supabase + TMDB value
 
 ## Memory
 
-Longer-lived project context (business framing, competitor notes, decisions made across sessions) lives at:
-`C:\Users\ghans\.claude\projects\C--Users-ghans-Desktop-New-App\memory\`
+Longer-lived context that *isn't* derivable from this repo (business framing,
+portfolio goals, why the design direction was chosen) lives at:
+`C:\Users\ghans\.claude\projects\c--Users-ghans-Desktop-BingeTrackr\memory\`
+
+It used to point at a `...Desktop-New-App\memory\` directory from when the
+project folder had a different name. That path is dead — its contents were
+migrated on 2026-07-31 and the stale copies deleted. They had drifted badly
+(claimed Next.js 15, TanStack Query, and the pre-reversal
+Continue-Watching-first Home order), which is the argument for keeping technical
+facts in this file and out of memory.

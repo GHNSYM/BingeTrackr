@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { fetchAllRows } from "@/lib/supabase/paginate";
 import { createClient } from "@/lib/supabase/server";
 import { getTv } from "@/lib/tmdb/client";
@@ -41,9 +42,7 @@ export async function markMovieWatchedAction(
   mediaId: string,
 ): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   // Pull runtime for denormalization onto watched_entries.
@@ -87,9 +86,7 @@ export async function unmarkMovieWatchedAction(
   mediaId: string,
 ): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { error } = await supabase
@@ -114,9 +111,7 @@ export async function markEpisodeWatchedAction(args: {
   episodeNumber: number;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { data: ep } = await supabase
@@ -188,9 +183,7 @@ export async function unmarkEpisodeAction(args: {
   episodeId: string;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { error } = await supabase
@@ -218,9 +211,7 @@ export async function markSeasonWatchedAction(args: {
   seasonNumber: number;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   // Fetch all episodes for this season via the seasons join.
@@ -310,9 +301,7 @@ export async function unmarkSeasonWatchedAction(args: {
   seasonNumber: number;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { data: episodes, error: epError } = await supabase
@@ -348,9 +337,7 @@ export async function setShowStatusAction(args: {
   status: ShowStatus;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   // Primary: update the status. Do this first so a failure in the
@@ -397,26 +384,23 @@ async function markEveryEpisodeWatched(
   userId: string,
   mediaId: string,
 ): Promise<void> {
-  // 1) Cache all seasons via TMDB. Requires the show's tmdb id.
-  const { data: extId } = await supabase
-    .from("media_external_ids")
-    .select("external_id")
-    .eq("media_id", mediaId)
-    .eq("source", "tmdb")
+  // 1) Cache all seasons via TMDB. Requires the show's tmdb id, which is
+  //    cached on `media` by trigger — no need to hit media_external_ids.
+  const { data: mediaRow } = await supabase
+    .from("media")
+    .select("tmdb_id")
+    .eq("id", mediaId)
     .maybeSingle();
 
-  if (extId?.external_id) {
-    const tv = await getTv(extId.external_id as string);
+  const tmdbId = mediaRow?.tmdb_id as string | null | undefined;
+  if (tmdbId) {
+    const tv = await getTv(tmdbId);
     const realSeasons = tv.seasons.filter((s) => s.season_number > 0);
     // Parallel cache-fill — TMDB has generous rate limits so even a 20-
     // season show completes in ~one round-trip.
     await Promise.all(
       realSeasons.map((s) =>
-        ensureSeasonCached(
-          mediaId,
-          extId.external_id as string,
-          s.season_number,
-        ).catch((err) => {
+        ensureSeasonCached(mediaId, tmdbId, s.season_number).catch((err) => {
           console.error(`ensureSeasonCached S${s.season_number} failed`, err);
         }),
       ),
@@ -519,13 +503,60 @@ async function markEveryEpisodeWatched(
 
 // ─── Watchlist ─────────────────────────────────────────────────────────────
 
+/**
+ * Is this title finished — a watched movie, or a series set to Completed?
+ *
+ * This is the same definition `getFinishedMediaIds` uses on the read side. A
+ * series merely in progress is NOT finished: a half-watched show legitimately
+ * stays on the watchlist, which is why `dropFromWatchlist` isn't called when a
+ * show moves to `watching`.
+ */
+async function isFinished(
+  supabase: SupabaseClient,
+  userId: string,
+  mediaId: string,
+): Promise<boolean> {
+  const [watchedMovie, completedShow] = await Promise.all([
+    supabase
+      .from("watched_entries")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("media_id", mediaId)
+      .is("episode_id", null)
+      .maybeSingle(),
+    supabase
+      .from("show_progress")
+      .select("media_id")
+      .eq("user_id", userId)
+      .eq("media_id", mediaId)
+      .eq("status", "completed")
+      .maybeSingle(),
+  ]);
+  return !!watchedMovie.data || !!completedShow.data;
+}
+
+/**
+ * Add to / remove from the watchlist.
+ *
+ * "Watched" and "to watch" are mutually exclusive — see `dropFromWatchlist`.
+ * That rule was only ever enforced in ONE direction: finishing something evicted
+ * it from the watchlist, but adding a finished title TO the watchlist happily
+ * inserted a row. `getWatchlistItems` then hid that row at read time, so the
+ * poster buttons showed both states lit while the Library showed only one. The
+ * UI was reporting the database honestly; the database was the thing that was
+ * wrong.
+ *
+ * Adding is therefore refused for a finished title. Refusing rather than
+ * silently un-watching it is deliberate: clearing a movie's watched entry would
+ * destroy its watch date and change the user's stats, and re-watching is
+ * explicitly a later flow (see `markMovieWatchedAction`). To watchlist something
+ * you've finished, un-mark it first — one click, already supported.
+ */
 export async function toggleWatchlistAction(
   mediaId: string,
 ): Promise<TrackingResult & { inWatchlist?: boolean }> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { data: existing } = await supabase
@@ -536,6 +567,7 @@ export async function toggleWatchlistAction(
     .maybeSingle();
 
   if (existing) {
+    // Removing is always allowed.
     const { error } = await supabase
       .from("watchlist_entries")
       .delete()
@@ -544,17 +576,23 @@ export async function toggleWatchlistAction(
     if (error) return { error: error.message };
     revalidatePath("/title/[type]/[id]", "layout");
     revalidatePath("/home");
+    revalidatePath("/library");
     return { ok: true, inWatchlist: false };
-  } else {
-    const { error } = await supabase.from("watchlist_entries").insert({
-      user_id: user.id,
-      media_id: mediaId,
-    });
-    if (error) return { error: error.message };
-    revalidatePath("/title/[type]/[id]", "layout");
-    revalidatePath("/home");
-    return { ok: true, inWatchlist: true };
   }
+
+  if (await isFinished(supabase, user.id, mediaId)) {
+    return { error: "already-watched" };
+  }
+
+  const { error } = await supabase.from("watchlist_entries").insert({
+    user_id: user.id,
+    media_id: mediaId,
+  });
+  if (error) return { error: error.message };
+  revalidatePath("/title/[type]/[id]", "layout");
+  revalidatePath("/home");
+  revalidatePath("/library");
+  return { ok: true, inWatchlist: true };
 }
 
 // ─── Ratings ───────────────────────────────────────────────────────────────
@@ -564,9 +602,7 @@ export async function rateMediaAction(args: {
   score: number;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   if (
@@ -596,9 +632,7 @@ export async function unrateMediaAction(
   mediaId: string,
 ): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { error } = await supabase
@@ -629,9 +663,7 @@ export async function assignTierAction(args: {
   tier: TierKey;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { error } = await supabase.from("tier_assignments").upsert(
@@ -652,9 +684,7 @@ export async function removeTierAction(
   mediaId: string,
 ): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { error } = await supabase
@@ -673,9 +703,7 @@ export async function renameTierLabelAction(args: {
   label: string;
 }): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const trimmed = args.label.trim().slice(0, 3);
@@ -699,9 +727,7 @@ export async function renameTierLabelAction(args: {
 
 export async function resetTierBoardAction(): Promise<TrackingResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { error: "not-signed-in" };
 
   const { error } = await supabase
@@ -727,9 +753,7 @@ export async function getShowProgress(
   mediaId: string,
 ): Promise<ShowProgress | null> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return null;
 
   const { data } = await supabase
@@ -744,9 +768,7 @@ export async function getShowProgress(
 
 export async function isInWatchlist(mediaId: string): Promise<boolean> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return false;
 
   const { data } = await supabase
@@ -761,9 +783,7 @@ export async function isInWatchlist(mediaId: string): Promise<boolean> {
 
 export async function getMyRating(mediaId: string): Promise<number | null> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return null;
 
   const { data } = await supabase
@@ -778,9 +798,7 @@ export async function getMyRating(mediaId: string): Promise<number | null> {
 
 export async function isMovieWatched(mediaId: string): Promise<boolean> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return false;
 
   const { data } = await supabase

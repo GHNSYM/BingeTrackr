@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ShareButton } from "@/components/trackr/ShareButton";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { posterUrl } from "@/lib/tmdb/client";
 import {
   bannerGradient,
@@ -54,10 +54,7 @@ export default async function PublicProfilePage({
   if (!profile) notFound();
 
   // Owner check — private profiles are 404 for everyone else.
-  const supabase = await createClient();
-  const {
-    data: { user: currentUser },
-  } = await supabase.auth.getUser();
+  const currentUser = await getCurrentUser();
   const isOwner = currentUser?.id === profile.id;
   if (!profile.is_public && !isOwner) notFound();
 
@@ -221,17 +218,42 @@ function ActivitySection({ items }: { items: ActivityItem[] }) {
   );
 }
 
+/**
+ * "S1 · E1–E6" for a binge, "S1 · E4 · Episode name" for a single watch.
+ *
+ * A gappy group (E1, E3, E7) reports the count as well as the span, because
+ * "E1–E7" alone would claim seven episodes were watched when three were.
+ */
+function episodeLabel(ep: NonNullable<ActivityItem["episodes"]>): string {
+  const { count, firstSeason, firstEpisode, lastSeason, lastEpisode } = ep;
+
+  if (count === 1) {
+    return `S${firstSeason} · E${firstEpisode}${
+      ep.singleName ? ` · ${ep.singleName}` : ""
+    }`;
+  }
+
+  const plural = `${count} episodes`;
+
+  // Spans seasons — spell both out rather than implying one range.
+  if (firstSeason !== lastSeason) {
+    return `S${firstSeason} E${firstEpisode} – S${lastSeason} E${lastEpisode} · ${plural}`;
+  }
+
+  if (ep.contiguous) {
+    return `S${firstSeason} · E${firstEpisode}–E${lastEpisode}`;
+  }
+
+  return `S${firstSeason} · E${firstEpisode}–E${lastEpisode} · ${plural}`;
+}
+
 function ActivityRow({ item }: { item: ActivityItem }) {
   const poster = posterUrl(item.posterPath, "w185");
   const href = item.tmdbId
     ? `/title/${item.tmdbType}/${item.tmdbId}`
     : "#";
   const when = relativeTime(item.watchedAt);
-  const meta = item.episode
-    ? `S${item.episode.seasonNumber} · E${item.episode.episodeNumber}${
-        item.episode.name ? ` · ${item.episode.name}` : ""
-      }`
-    : "Movie";
+  const meta = item.episodes ? episodeLabel(item.episodes) : "Movie";
 
   return (
     <Link

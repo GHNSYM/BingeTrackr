@@ -78,9 +78,11 @@ Two things differed from the original plan, both for good reasons:
   queries, merged. Returns a full 12 distinct titles reading fewer rows than
   the broken version.
 
-Note `getStats().onThisDay` is now redundant with `getOnThisDay()` — fold it
+~~Note `getStats().onThisDay` is now redundant with `getOnThisDay()` — fold it
 into the RPC work in `OPTIMIZATIONS.md` #4 rather than keeping two
-implementations.
+implementations.~~ **Resolved 2026-08-01:** both now call the single
+`get_on_this_day` RPC. The OR'd-one-range-per-year workaround is gone too — SQL
+can filter on `EXTRACT(MONTH …)` directly.
 
 ### Phase 2 — the single discovery hook — **DONE (as a hero, not a rail)**
 

@@ -1,4 +1,5 @@
 import "server-only";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchAllRows } from "@/lib/supabase/paginate";
 import { getSeason } from "./client";
@@ -124,11 +125,7 @@ export async function getUserWatchedEpisodeIds(
   mediaId: string,
 ): Promise<Set<string>> {
   const admin = createAdminClient();
-  const { createClient } = await import("@/lib/supabase/server");
-  const supa = await createClient();
-  const {
-    data: { user },
-  } = await supa.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return new Set();
 
   // Paginated: a long-running anime (One Piece is 1100+ episodes) blows past

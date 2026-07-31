@@ -1,5 +1,6 @@
 import { cache } from "react";
 import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/current-user";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile } from "@/types/db";
 import { PLACEHOLDER_USERNAME_REGEX } from "@/types/db";
@@ -8,10 +9,7 @@ import { PLACEHOLDER_USERNAME_REGEX } from "@/types/db";
  * Redirect to /login if not signed in. Returns the user.
  */
 export async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) redirect("/login");
   return user;
 }
@@ -21,17 +19,17 @@ export async function requireUser() {
  *
  * Wrapped in React's cache() so multiple callers within the same render
  * pass — e.g. (app)/layout.tsx and the page component inside it — share
- * a single Supabase round-trip instead of hitting the DB twice.
+ * a single profile read. The auth round-trip itself is shared even more
+ * widely, because it goes through the cached `getCurrentUser`.
  */
 export const getUserAndProfile = cache(async (): Promise<{
   user: { id: string; email?: string } | null;
   profile: Profile | null;
 }> => {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) return { user: null, profile: null };
+
+  const supabase = await createClient();
 
   const { data: profile } = await supabase
     .from("profiles")
