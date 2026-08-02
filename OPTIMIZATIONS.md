@@ -256,6 +256,33 @@ which is what makes it safe: exactly one writer, and that writer is the database
 maps many TMDB ids to media ids, which is that table's actual job. It no longer
 needs the `media` join, though, since `media_type` lives on the row now.
 
+### 11. Discover's landing is 8 TMDB calls and 1 whole-library read — **BY DESIGN, 2026-08-01**
+
+Not a backlog item — recorded so nobody "optimizes" it without the reasoning.
+
+The browse engine's landing renders two trending grids, a chip block, and five
+browse rails. That's **8 TMDB calls** (2 trending + 5 rails + 1 genre list) where
+it used to be 4. It is cheaper than it looks, and the shape is deliberate:
+
+- **Wall-clock is the slowest call, not the sum.** Every section is an async
+  server component inside its own `<Suspense>`, so they run concurrently and the
+  page paints before any of them land. Measured warm: TTFB ~250-310ms, full
+  document 540-800ms with all eight resolved.
+- **Trending dropped from 2 pages to 1.** Both remaining URLs are byte-identical
+  to what Home's hero already fetches, so Home and Discover now share fetch-cache
+  entries instead of each paying. Net new cost is 5 calls, not 8.
+- **6h `revalidate`** on `/discover` (`discoverTitles`) and **7d** on the genre
+  list. One visitor per window pays; everyone else hits the cache.
+- **Supabase is 4 queries, flat.** Seven rails needing hover state would be 4×7 =
+  28 with the batched `getQuickTrackStates`. `getAllTrackStates()` is `cache()`d,
+  so the first rail pays and the rest are memo hits — and crucially that keeps the
+  streaming, whereas collecting ids up front would force every rail to resolve
+  before any could render.
+
+The lever if this ever hurts is the rail count, and the config makes it a
+one-line deletion. Prefer moving an axis into the "Browse by" chip row — a chip
+costs nothing and the genre list is already fetched.
+
 ### 10. `getRecentActivity` reads a 400-row window to build 12 grouped rows
 
 `src/lib/tracking/queries.ts` → `getRecentActivity`

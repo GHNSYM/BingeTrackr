@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useActionState } from "react";
+import { BrandMark } from "@/components/trackr/BrandMark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,12 +15,7 @@ export default function SignupPage() {
     <main className="flex flex-1 items-center justify-center px-6 py-16">
       <div className="w-full max-w-sm flex flex-col gap-8">
         <div className="flex flex-col gap-2 text-center">
-          <div
-            aria-hidden
-            className="mx-auto w-11 h-11 rounded-xl bg-primary text-primary-foreground grid place-items-center font-bold text-lg mb-2"
-          >
-            B
-          </div>
+          <BrandMark size={44} className="mx-auto mb-2" />
           <h1 className="text-3xl font-bold tracking-tight">Create your account</h1>
           <p className="text-meta text-sm">Free forever. No card, no ads.</p>
         </div>

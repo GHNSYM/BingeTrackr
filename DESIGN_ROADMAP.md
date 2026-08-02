@@ -143,38 +143,87 @@ Discover becomes the browse engine. Ordered by build cost against value.
 
 ### Done
 
-Trending movies + shows, multi-page (~40 each), search, type filter, poster-size
-toggle, hover Watched/Watchlist actions.
+Trending movies + shows, search, type filter, poster-size toggle, hover
+Watched/Watchlist actions — **and, as of 2026-08-01, the browse engine itself:
+the shared fetcher, the reusable section, and all five Phase 1 axes.** See
+"Phase 1 — shipped" below.
 
-### The one structural decision that matters
+### The one structural decision that matters — **BUILT**
 
 Almost every row below is **the same TMDB endpoint with different query
 params**: `/discover/movie` and `/discover/tv`.
 
-Build **one** `discoverTitles(type, params)` in `src/lib/tmdb/client.ts` and
-**one** reusable browse section component, and every row in Phase 1 becomes a
-config object rather than new code. Get this wrong and you write eight
-near-identical fetchers.
+Built as **one** `discoverTitles(type, params)` in `src/lib/tmdb/client.ts`
+(plus `discoverTitlesPage` for the paginated grid) and **one** `BrowseSection`
+in `src/components/trackr/`. Every row is a config object in
+`src/lib/discover/axes.ts`.
 
-Reuse what already exists: `TrackablePosterGrid` (hover actions + fluid
-sizing) and `PosterSizeShell` (`data-poster-size`). Any new section inherits
-both for free.
+It reuses `TrackablePosterGrid` (hover actions + fluid sizing) and
+`PosterSizeShell` (`data-poster-size`), so new sections inherit both for free.
 
-Keep filters **URL-driven** (`/discover?genre=28&lang=hi&sort=rating`) so state
-is shareable and bookmarkable — consistent with the zero-JS `SearchBar` and the
-existing type pills.
+Filters are **URL-driven** (`/discover/browse?genre=28&lang=hi&sort=rating`), so
+state is shareable and bookmarkable — every facet is a plain `<Link>`, no client
+state, consistent with the zero-JS `SearchBar` and the type pills.
 
-### Phase 1 — cheap and high-value (all just `/discover` params)
+**The fetcher earns its keep for a reason the original plan didn't anticipate:
+TMDB ignores unknown query params silently and returns 200.** A request with
+`with_bogus_thing=x` came back with the full unfiltered 1,164,683-result total.
+A typo in a filter therefore doesn't fail — it quietly widens the row to
+"everything" and still looks like a working feature. One typed surface makes that
+class of bug impossible rather than merely unlikely. Two live examples of exactly
+that trap:
 
-| Row | TMDB | Gotcha |
+- **`primary_release_year` is silently ignored on `/discover/tv`.** It returned
+  228,129 results (the unfiltered total) where `first_air_date_year` returned
+  15,031. The date key differs per type and so does the sort key
+  (`primary_release_date.desc` vs `first_air_date.desc`).
+- **Movie and TV genre ids are different sets** — 19 vs 16, partial overlap.
+  Movie `28 Action` has no TV equivalent; TV uses `10759 Action & Adventure`.
+  Reusing a movie genre id on a TV row returns an empty grid, not an error.
+
+### Phase 1 — shipped 2026-08-01
+
+All five axes, one fetcher plus config, exactly as scoped.
+
+| Axis | How | What was actually learned |
 |---|---|---|
-| **By genre** | `/genre/{type}/list` for names, then `with_genres=` | Genre list is static enough to cache for a week. |
-| **By rating** | `sort_by=vote_average.desc` + **`vote_count.gte=300`** | The `vote_count` floor is mandatory. Without it you get obscure titles with three 10/10 votes — this is exactly the bug that was already fixed once in `trendingInRegion`, which was sorting trending results by `vote_average`. |
-| **Indian languages** | `with_original_language=hi\|ta\|te\|ml\|kn\|bn\|mr` | The strongest differentiator for the target audience, and it's one query param. Rows per language. |
-| **On your streaming services** | `with_watch_providers=` + `watch_region=IN` | "What's on Netflix / Prime / Hotstar in India." Pairs with the provider data already cached in `watch_providers_cache`. |
-| **By year / decade** | `primary_release_year`, or `.gte`/`.lte` ranges | Trivial once the shared fetcher exists. |
+| **By genre** | `/genre/{type}/list` (7d cache) → `with_genres=` | Per-type id sets, see above. |
+| **By rating** | `sort_by=vote_average.desc` + a vote floor | The floor was the whole problem — see below. |
+| **Indian languages** | `with_original_language=` | Pipe-OR works (`hi\|ta\|te` → 20,156 results vs 10,350 for `hi` alone). Eight languages for film; **Hindi only for TV**. |
+| **Streaming services** | `with_watch_providers=` + `watch_region=IN` | **Disney+ Hotstar (122) no longer exists in the IN list — it's JioHotstar, 2336.** A wrong provider id returns 200 with an empty row. |
+| **By year / decade** | `{date_key}.gte` / `.lte` | Trivial, once the date key is resolved per type. |
 
-That's five browse axes for roughly one fetcher plus config.
+**The vote-count floor was harder than "300".** The roadmap called the floor
+mandatory and it is, but a single number doesn't work in either direction:
+
+- Unfiltered, `vote_average.desc` returns five 1-vote titles rated 10/10.
+- At TMDB's own 300 threshold it *still* ranked a 2026 release with 331 votes
+  above The Shawshank Redemption (30,893 votes). New releases collect a burst of
+  enthusiast votes and outrank the canon. 3,000 (film) / 1,500 (TV) fixed it.
+- Narrowing inverts it. At a flat 100, **Marathi and Punjabi returned zero
+  results** — dead chips — and Kannada returned 4. The floor now scales per
+  language from measured catalogue size (`LANGUAGE_RATING_FLOOR` in `axes.ts`,
+  with the measurement table alongside it), and every chip lands on a real grid:
+  Sairat, Thithi, Carry On Jatta, Kumbalangi Nights.
+- A floor is also needed on non-rating rows scoped to a small population.
+  `popularity.desc` on Indian-language TV surfaced serials sitting at `0.0/0`.
+
+**TMDB barely catalogues regional Indian television.** With ≥5 votes: Hindi 346,
+Tamil 20, Bengali 15, Telugu 10, Malayalam 6, Kannada 1, Marathi 0, Punjabi 0.
+So TV gets one language chip, not eight (`languagesForType`). That's a data
+limit, not a product call — widen it if coverage improves.
+
+**Two deviations from the layout convention below, both deliberate:**
+
+1. **Trending stays a grid, not a rail.** It's the page's anchor — the one
+   section that answers "what should I watch right now" without the user picking
+   an axis first, so it earns the density. Everything under it is an axis, and
+   axes are rails. It did drop from 2 TMDB pages to 1, which makes both URLs
+   byte-identical to Home's hero fetch, so the two routes now share fetch-cache
+   entries.
+2. **One provider rail, and it's Netflix** — picked because TMDB reports it as
+   `display_priorities.IN: 0`, so it's from the data rather than a favourite. The
+   other seven services are chips.
 
 ### Phase 2 — needs real work
 
@@ -223,14 +272,21 @@ same component.
 
 ## Sequencing
 
-1. Home Phase 1 — "your stuff" sections. Cheap, differentiated, fixes the
-   1-show empty state.
-2. Discover shared fetcher + browse section component. **The unlock** — do it
-   before any individual row.
-3. Discover Phase 1 rows, one at a time. Each is config once step 2 exists.
-4. Home's single trending rail. After Discover has somewhere to send people.
-5. Discover Phase 2 — decide the editorial content model first (probably
-   `custom_lists`), then franchises → people → must-watch → mood.
+1. ~~Home Phase 1 — "your stuff" sections.~~ **Done.**
+2. ~~Discover shared fetcher + browse section component.~~ **Done 2026-08-01** —
+   `discoverTitles` / `discoverTitlesPage` / `getGenres` in `lib/tmdb/client.ts`,
+   `BrowseSection`, and `lib/discover/axes.ts`.
+3. ~~Discover Phase 1 rows.~~ **Done 2026-08-01** — all five axes, plus the
+   `/discover/browse` grid with URL-driven facets and pagination.
+4. ~~Home's single trending rail.~~ **Done** — shipped as the hero carousel
+   instead (see Home Phase 2).
+5. **← next.** Discover Phase 2 — decide the editorial content model first
+   (probably `custom_lists`), then franchises → people → must-watch → mood.
+
+Phase 2 has one thing worth settling before any of it: whether an admin-owned
+account publishing public `custom_lists` really can back franchises, must-watches
+and mood with zero new schema. Confirm that first; it decides the shape of three
+rows at once.
 
 ## Cost notes
 

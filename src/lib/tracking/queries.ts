@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { fetchAllRows } from "@/lib/supabase/paginate";
 import { createClient } from "@/lib/supabase/server";
@@ -659,6 +660,107 @@ export async function getQuickTrackStates(
 
   return states;
 }
+
+/**
+ * The same state as `getQuickTrackStates`, but for *everything* the user has
+ * tracked, memoised for the request.
+ *
+ * WHY BOTH EXIST. `getQuickTrackStates` is bounded by the batch of TMDB ids on
+ * screen, which is the right shape for one grid. Discover's landing page is a
+ * different shape: seven rails, each streaming behind its own Suspense boundary,
+ * each needing hover state. Calling the batched version per rail is 4 queries ×
+ * 7 = **28**, and collecting the ids first would mean awaiting every rail before
+ * rendering any of them — trading the streaming the page was built for.
+ *
+ * `cache()` resolves it: the first rail to render pays 4 queries, the other six
+ * hit the memo, and each still paints the moment its own TMDB call lands.
+ * Lookups for untracked titles simply miss, which yields the correct
+ * not-tracked default in `TrackablePosterGrid`.
+ *
+ * Prefer `getQuickTrackStates` on a single-grid route — it reads fewer rows.
+ * Reach for this one when several independent grids share a request.
+ *
+ * Not hoisted to module scope: it is per-user data and `cache()` is per-request
+ * (see the note in `lib/auth/current-user.ts`).
+ */
+export const getAllTrackStates = cache(
+  async (): Promise<Map<string, QuickTrackState>> => {
+    const states = new Map<string, QuickTrackState>();
+
+    const supabase = await createClient();
+    const user = await getCurrentUser();
+    if (!user) return states;
+
+    // Watchlist and completed shows are small by nature; watched *movies* is the
+    // one that grows, so all three paginate. `getStats` shipped wrong numbers
+    // for a year because a 1490-row read silently stopped at 1000.
+    const [watchedMovies, completedShows, watchlisted] = await Promise.all([
+      fetchAllRows<{ media_id: string }>((from, to) =>
+        supabase
+          .from("watched_entries")
+          .select("media_id")
+          .eq("user_id", user.id)
+          .is("episode_id", null)
+          // `id`, not `media_id` — rewatches mean a title can hold several rows,
+          // and a non-unique sort key duplicates and skips across page edges.
+          .order("id")
+          .range(from, to),
+      ),
+      fetchAllRows<{ media_id: string }>((from, to) =>
+        supabase
+          .from("show_progress")
+          .select("media_id")
+          .eq("user_id", user.id)
+          .eq("status", "completed")
+          .order("media_id")
+          .range(from, to),
+      ),
+      fetchAllRows<{ media_id: string }>((from, to) =>
+        supabase
+          .from("watchlist_entries")
+          .select("media_id")
+          .eq("user_id", user.id)
+          .order("media_id")
+          .range(from, to),
+      ),
+    ]);
+
+    const watchedIds = new Set(
+      [...watchedMovies, ...completedShows].map((r) => r.media_id),
+    );
+    const watchlistIds = new Set(watchlisted.map((r) => r.media_id));
+    const mediaIds = [...new Set([...watchedIds, ...watchlistIds])];
+    if (mediaIds.length === 0) return states;
+
+    // One resolve of internal id → TMDB id. `media_type` is part of this table's
+    // key, so no join to `media` is needed to build the poster-grid key.
+    const extRows = await fetchAllRows<{
+      media_id: string;
+      external_id: string;
+      media_type: string;
+    }>((from, to) =>
+      supabase
+        .from("media_external_ids")
+        .select("media_id, external_id, media_type")
+        .eq("source", "tmdb")
+        .in("media_id", mediaIds)
+        // `(external_id, media_type)` is the unique remainder of this table's PK
+        // once `source` is pinned — TMDB reuses id 550 across movie and tv.
+        .order("external_id")
+        .order("media_type")
+        .range(from, to),
+    );
+
+    for (const row of extRows) {
+      states.set(`${row.media_type}-${row.external_id}`, {
+        watched: watchedIds.has(row.media_id),
+        watchlisted: watchlistIds.has(row.media_id),
+      });
+    }
+
+    return states;
+  },
+);
 
 export function quickTrackKey(
   tmdbType: "movie" | "tv",

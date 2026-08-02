@@ -33,6 +33,22 @@
   --radius-pill: 9999px;
 }
 
+/* Single source of truth for how far down the landing page's fixed controls sit.
+   The hero's top padding is derived from this (see `.hero-aligned-top`) so the
+   brand lockup stays optically level with the Log in pill — including on a
+   notched phone, where `env()` pushes both down together instead of only one. */
+:root {
+  --float-top: max(1rem, env(safe-area-inset-top));
+}
+
+/* Aligns the brand lockup's vertical centre with the 40px-tall fixed controls.
+   Controls' centre sits at `--float-top + 20px`; the 30px lockup's centre sits at
+   its own top + 15px — so the padding is `--float-top + 5px`. Change the lockup
+   size or the control height and this offset has to be recomputed. */
+.hero-aligned-top {
+  padding-top: calc(var(--float-top) + 5px);
+}
+
 /* ─────────────────────────────────────────────────────────────
    LIGHT theme — pale paper, dark ink on white primary
    ───────────────────────────────────────────────────────────── */
@@ -78,6 +94,44 @@
   --online: #2f9e4a;
 
   --skel: linear-gradient(90deg, rgba(0,0,0,.04) 25%, rgba(0,0,0,.10) 37%, rgba(0,0,0,.04) 63%);
+
+  /* Monochrome gradient stops — the landing page's only "colour". Ink-on-paper
+     in light, light-on-ink in dark, so every wash inverts with the theme. */
+  --wash-1: rgba(18, 18, 22, 0.10);
+  --wash-2: rgba(18, 18, 22, 0.05);
+  --sheen-to: rgba(22, 22, 24, 0.42);
+  --hairline: rgba(18, 18, 22, 0.28);
+
+  /* Accent gradient — LANDING PAGE ONLY. See the note in the LANDING PAGE
+     section below for why colour is permitted there and nowhere else. Every
+     stop is lifted from a palette the handoff already sanctions: tier-S gold,
+     tier-A ember, and the Rosé profile banner. `--grad-ink` is the only text
+     colour that clears AA against all three stops. */
+  --grad-1: #f0a63c;
+  --grad-2: #e0653f;
+  --grad-3: #cc5c82;
+  --grad-ink: #1a1208;
+
+  /* Separate stops for gradient TEXT. The surface stops above are chosen to look
+     good under dark ink; as text they'd sit at ~3.8:1 on near-black and a
+     hopeless ~1.5:1 on light paper. These are darkened so gradient text clears
+     AA-large against `--background` in this theme. */
+  --gradt-1: #a8620a;
+  --gradt-2: #b8401f;
+  --gradt-3: #8c2b52;
+
+  /* Colour tint layered into the ambient washes. Stronger in light, where the
+     same alpha over pale paper reads much weaker than over near-black. */
+  --tint-1: rgba(240, 166, 60, 0.10);
+  --tint-2: rgba(176, 58, 106, 0.08);
+
+  /* Thick-glass edges (`.glass-liquid`). A white top highlight is invisible on
+     pale paper, so light theme leans on a near-opaque specular and a much
+     softer bottom shade than dark does. */
+  --glass-spec: rgba(255, 255, 255, 0.95);
+  --glass-shade: rgba(18, 18, 22, 0.10);
+  --glass-rim: rgba(18, 18, 22, 0.14);
+  --glass-lift: 0 10px 30px -10px rgba(40, 40, 48, 0.28);
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -125,6 +179,30 @@
   --online: #3fb950;
 
   --skel: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.10) 37%, rgba(255,255,255,.04) 63%);
+
+  --wash-1: rgba(255, 255, 255, 0.11);
+  --wash-2: rgba(255, 255, 255, 0.055);
+  --sheen-to: rgba(255, 255, 255, 0.40);
+  --hairline: rgba(255, 255, 255, 0.55);
+
+  --grad-1: #f0a63c;
+  --grad-2: #e0653f;
+  --grad-3: #cc5c82;
+  --grad-ink: #1a1208;
+
+  /* On near-black the vivid stops are already legible as text, so text and
+     surface share them here. */
+  --gradt-1: #f0a63c;
+  --gradt-2: #e0653f;
+  --gradt-3: #cc5c82;
+
+  --tint-1: rgba(240, 166, 60, 0.16);
+  --tint-2: rgba(176, 58, 106, 0.13);
+
+  --glass-spec: rgba(255, 255, 255, 0.45);
+  --glass-shade: rgba(0, 0, 0, 0.28);
+  --glass-rim: rgba(255, 255, 255, 0.14);
+  --glass-lift: 0 10px 30px -8px rgba(0, 0, 0, 0.55);
 }
 
 @layer base {
@@ -163,6 +241,56 @@
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
   border: 1px solid var(--border);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Thick "liquid" glass — the floating landing-page controls.
+
+   A heavier read than `.glass`: more blur, a real saturation push so colour
+   bleeds through from behind, and a lit rim. What sells depth is not the blur
+   but the EDGES — a bright specular along the top inner edge, a dark shade
+   along the bottom inner edge, and a faint full rim. That's what makes a
+   translucent pill look like a piece of glass sitting above the page instead of
+   a flat tinted rectangle.
+
+   Deliberately NOT an SVG displacement map. True refraction needs
+   `backdrop-filter: url(#f)` with feTurbulence + feDisplacementMap, which Safari
+   doesn't support in `backdrop-filter` at all, and which re-runs on a fixed
+   element every scroll frame. `AGENTS.md` calls out glassmorphism perf on cheap
+   Android as a real constraint, and that filter is exactly the thing that would
+   break it. This is the expensive-looking, cheap-to-render version.
+   ───────────────────────────────────────────────────────────── */
+
+.glass-liquid {
+  position: relative;
+  background: var(--surface2);
+  backdrop-filter: blur(30px) saturate(1.9) brightness(1.06);
+  -webkit-backdrop-filter: blur(30px) saturate(1.9) brightness(1.06);
+  border: none;
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-spec),
+    inset 0 -1px 0 0 var(--glass-shade),
+    inset 0 0 0 1px var(--glass-rim),
+    var(--glass-lift);
+}
+
+/* Diagonal sheen across the surface. `border-radius: inherit` rather than
+   `overflow: hidden` on the parent — overflow would make it a scroll container,
+   which is the trap documented further down. */
+.glass-liquid::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    142deg,
+    var(--glass-spec) 0%,
+    transparent 42%,
+    transparent 62%,
+    var(--glass-shade) 100%
+  );
+  opacity: 0.22;
 }
 
 .text-body   { color: var(--body); }
@@ -390,9 +518,532 @@
 /* Perf mitigation: drop backdrop blurs when user prefers reduced transparency */
 @media (prefers-reduced-transparency: reduce) {
   .glass,
-  .glass-raised {
+  .glass-raised,
+  .glass-liquid {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: var(--bg2);
+  }
+  /* The sheen reads as a smear once there's no blur behind it. */
+  .glass-liquid::after { display: none; }
+  .glass-liquid {
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+}
+
+/* ═════════════════════════════════════════════════════════════
+   LANDING PAGE
+   ═════════════════════════════════════════════════════════════
+
+   The marketing page at `/`. Everything here is scoped to it — none of these
+   classes are used inside the app shell.
+
+   Two constraints shape all of it:
+
+   1. **No colour.** `AGENTS.md` restricts colour to poster art, tier bands and
+      profile banners. So every gradient on this page is a *luminance* gradient
+      built from `--wash-*` / `--sheen-to`, which flip with the theme. The page's
+      colour moments are the tier bands and the gradient poster tiles, both of
+      which are licensed exceptions.
+   2. **No JavaScript.** The page is a static server component, so the scroll
+      work is CSS scroll-driven animation (`animation-timeline`) rather than an
+      IntersectionObserver. Every such rule sits behind `@supports` AND
+      `prefers-reduced-motion: no-preference`, with the un-animated state being
+      the *finished* state — a browser without support (Firefox today) gets the
+      full page, statically, not a page of invisible sections.
+   ───────────────────────────────────────────────────────────── */
+
+/* Tailwind generates `font-display` from the `--font-display` theme key, but
+   declare it outright so the wordmark can't silently fall back to Inter. */
+.font-display {
+  font-family: var(--font-display), var(--font-inter), system-ui, sans-serif;
+}
+
+/* ── Display type ──────────────────────────────────────────────
+   Manrope 800 at poster scale. Tracking tightens as size grows — at 6rem the
+   default spacing reads loose and amateurish, hence -0.045em. `text-wrap:
+   balance` keeps the headline from dropping a single orphaned word. */
+
+.display-hero {
+  font-family: var(--font-display), var(--font-inter), system-ui, sans-serif;
+  font-weight: 800;
+  font-size: clamp(2.85rem, 8.4vw, 6.5rem);
+  line-height: 0.93;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.display-section {
+  font-family: var(--font-display), var(--font-inter), system-ui, sans-serif;
+  font-weight: 800;
+  font-size: clamp(2rem, 4.8vw, 3.5rem);
+  line-height: 1;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+/* Gradient ink. Fades the tail of a heading toward the background so long
+   headlines recede instead of shouting at uniform 100% white.
+
+   ⚠ The padding is load-bearing, not spacing. `background-clip: text` paints the
+   gradient only within the element's own box, and the display line-heights here
+   are below 1 — so a descender (the g in "again", y, p) hangs BELOW that box,
+   gets no gradient, and because the fill is transparent it renders as nothing at
+   all. The glyph is silently sliced off.
+
+   `padding-bottom` extends the painted area past the descender; the matching
+   negative `margin-bottom` gives the space straight back so no layout moves. Set
+   in `em` so one value holds across the whole `clamp()` range.
+
+   0.22em is measured, not guessed: Manrope's descender ink runs 0.26em below the
+   baseline, and at `line-height: 0.93` the last line overflows its content box by
+   ~0.179em. 0.16em was tried first and still clipped the "g" in "again" by 2px.
+   Don't remove either half, and don't trim the value without re-measuring.
+
+   ⚠ CONSEQUENCE: this rule loads after Tailwind's utilities, so its
+   `margin-bottom` BEATS a `mb-*` class on the same element — the utility just
+   silently does nothing. Space a `.text-sheen` heading with flex `gap` on its
+   parent, never `mb-*` on the heading itself. */
+.text-sheen {
+  background: linear-gradient(166deg, var(--foreground) 6%, var(--sheen-to) 94%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  padding-bottom: 0.22em;
+  margin-bottom: -0.22em;
+}
+
+/* ── Ambient washes ───────────────────────────────────────────
+   Three soft radials behind a section. `pointer-events:none` and a -z index so
+   it never eats clicks from the content above it. */
+
+.aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.aurora::before {
+  content: "";
+  position: absolute;
+  inset: -25% -15% -10% -15%;
+  background:
+    radial-gradient(46% 40% at 16% 6%, var(--wash-1), transparent 62%),
+    radial-gradient(40% 36% at 84% 0%, var(--wash-2), transparent 66%),
+    radial-gradient(58% 46% at 52% 102%, var(--wash-2), transparent 70%);
+}
+
+/* Colour on top of the luminance wash. Kept as a separate opt-in class so the
+   monochrome `.aurora` stays available, and so the tint can be tuned in one
+   place without touching the base wash geometry. */
+.aurora-warm::after {
+  content: "";
+  position: absolute;
+  inset: -25% -15% -10% -15%;
+  background:
+    radial-gradient(38% 32% at 12% 4%, var(--tint-1), transparent 66%),
+    radial-gradient(34% 30% at 88% 12%, var(--tint-2), transparent 68%);
+}
+
+/* ── The accent gradient ──────────────────────────────────────
+   Used on the primary CTAs and a handful of accents. `--grad-ink` (near-black)
+   rather than white text: white clears AA against the ember and rosé stops but
+   only reaches ~2.1:1 on the amber one, so it would fail at the light end of
+   every button. Dark ink clears all three. */
+
+.grad-surface {
+  background: linear-gradient(
+    104deg,
+    var(--grad-1) 0%,
+    var(--grad-2) 52%,
+    var(--grad-3) 100%
+  );
+  color: var(--grad-ink);
+}
+
+.grad-text {
+  background: linear-gradient(100deg, var(--gradt-1), var(--gradt-2) 55%, var(--gradt-3));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  /* Same descender trap as `.text-sheen` — see the warning there. */
+  padding-bottom: 0.22em;
+  margin-bottom: -0.22em;
+}
+
+/* A light sweep across the button on hover. The pseudo-element is masked to the
+   button's own rounded box by `overflow: hidden` on `.grad-btn`; that's safe
+   here because nothing inside a button uses a view() timeline. */
+.grad-btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--grad-2) 60%, transparent);
+  transition: box-shadow 0.25s ease, transform 0.12s ease;
+}
+
+.grad-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.45) 50%,
+    transparent 80%
+  );
+  transform: translateX(-115%);
+  transition: transform 0.62s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.grad-btn:hover {
+  box-shadow: 0 12px 32px -8px color-mix(in srgb, var(--grad-2) 75%, transparent);
+}
+
+.grad-btn:hover::after {
+  transform: translateX(115%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grad-btn::after { transition: none; }
+}
+
+/* ── Title marquee ────────────────────────────────────────────
+   Two rows of poster tiles drifting in opposite directions. The track holds the
+   tile list TWICE and translates exactly -50%, so the second copy is in the
+   first's starting position when the loop restarts — seamless with no JS.
+
+   ⚠ `.marquee-row` is `overflow: hidden`, which makes it a scroll container.
+   Never put a `.reveal` or `.scribble-path` inside one — their view() timelines
+   would resolve against the row and freeze. Put those on the section instead. */
+
+@keyframes marquee-left {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+@keyframes marquee-right {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
+}
+
+.marquee-row {
+  overflow: hidden;
+  /* Fades both ends so tiles enter and leave instead of being chopped. */
+  mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 6%,
+    #000 94%,
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 6%,
+    #000 94%,
+    transparent
+  );
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-left 46s linear infinite;
+}
+
+.marquee-track-rev { animation-name: marquee-right; }
+
+/* Pausing on hover lets someone actually read a title they spotted. */
+.marquee-row:hover .marquee-track { animation-play-state: paused; }
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track { animation: none; }
+}
+
+/* Film grain over the washes. An inline SVG turbulence — a few hundred bytes,
+   no network request — which stops large flat gradients from banding on cheap
+   8-bit Android panels. */
+.grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.032;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Lit top edge on a glass card — the hairline that makes a translucent panel
+   read as a physical surface rather than a flat rectangle. */
+.edge-glow {
+  position: relative;
+}
+
+.edge-glow::before {
+  content: "";
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--hairline), transparent);
+  opacity: 0.7;
+}
+
+/* ── Motion ───────────────────────────────────────────────────
+   The float loop is the handoff's `floaty` keyframe. Applied to an INNER
+   element wherever the outer one carries a scroll-driven parallax — two
+   animations writing `transform` on one element would fight, and the last
+   declared wins. */
+
+@keyframes float-y {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-10px); }
+}
+
+.float-slow { animation: float-y 5s ease-in-out infinite; }
+.float-slower { animation: float-y 7s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .float-slow,
+  .float-slower { animation: none; }
+}
+
+/* ── Scroll-driven reveal ─────────────────────────────────────
+   The default state of `.reveal` is deliberately EMPTY: no opacity:0, no
+   transform. The hidden state only exists inside the @supports block, so the
+   failure mode is "no animation", never "invisible content". */
+
+@keyframes reveal-up {
+  from { opacity: 0; transform: translateY(32px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes parallax-up {
+  to { transform: translateY(-60px); }
+}
+
+@keyframes progress-x {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+/* ⚠ `overflow: hidden` ON AN ANCESTOR SILENTLY BREAKS ALL OF THIS.
+   An `overflow: hidden` element IS a scroll container, so `animation-timeline:
+   view()` resolves against THAT box instead of the document. The box never
+   scrolls, so every animation on it computes one meaningless progress value and
+   parks in `playState: "finished"` — the properties all still report correctly
+   in devtools, and `getAnimations()` still shows a real `ViewTimeline`, so it
+   looks wired up while doing nothing.
+
+   This bit the landing page once: the sections carried `overflow-hidden` to clip
+   their `.aurora` wash. It was redundant — `.aurora` clips its own `::before` —
+   and removing it is what made the reveals run. Don't add `overflow-hidden` to
+   a section that contains `.reveal`, `.story-line` or `.scribble-path`; clip the
+   offending child instead. `scroll(root block)` is immune, since it names the
+   scroller explicitly. */
+
+/* Hidden until scroll-driven animation can actually run it. */
+.scroll-progress {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 2px;
+  z-index: 60;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, transparent, var(--hairline));
+  pointer-events: none;
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    /* `cover`, not `entry`, for the same reason as `.scribble-path` below: an
+       `entry` range is only as long as the element's own height, so these faded
+       in over ~75px of scroll — a pop rather than a reveal. `cover` gives each
+       element ~100vh of travel, and 8%→34% lands it fully opaque about a third
+       of the way up the screen, comfortably before it's read. */
+    .reveal {
+      animation: reveal-up linear both;
+      animation-timeline: view();
+      animation-range: cover 8% cover 34%;
+    }
+
+    /* Staggering by delay is impossible on a view() timeline (delays are
+       time-based, the timeline is not), so siblings stagger by shifting their
+       RANGE instead — each one starts a little later in its own journey. */
+    .reveal-2 { animation-range: cover 13% cover 39%; }
+    .reveal-3 { animation-range: cover 18% cover 44%; }
+
+    .parallax-slow {
+      animation: parallax-up linear both;
+      animation-timeline: scroll(root block);
+      animation-range: 0 100vh;
+    }
+
+    .scroll-progress {
+      animation: progress-x linear both;
+      animation-timeline: scroll(root block);
+    }
+  }
+}
+
+/* ── Handwriting ──────────────────────────────────────────────
+   Caveat, loaded ONLY in `(marketing)/layout.tsx` so the authed app never
+   downloads it. Declared as a plain class rather than a `--font-*` theme key
+   because the theme key would need to reference itself.
+
+   Caveat runs small for its point size and sits high on the baseline, so
+   anywhere it's mixed inline with Manrope or Inter it needs bumping up ~15%
+   and nudging down — `.font-hand-inline` does both. */
+
+.font-hand {
+  font-family: var(--font-caveat), "Segoe Print", "Bradley Hand", cursive;
+  letter-spacing: 0;
+}
+
+.font-hand-inline {
+  font-family: var(--font-caveat), "Segoe Print", "Bradley Hand", cursive;
+  letter-spacing: 0;
+  font-size: 1.15em;
+  line-height: 1;
+  vertical-align: -0.06em;
+}
+
+/* An aside scrawled in the margin. Slight rotation sells the "written by hand
+   after the fact" read — kept under 2deg so it looks deliberate, not broken. */
+.hand-note {
+  font-family: var(--font-caveat), "Segoe Print", "Bradley Hand", cursive;
+  letter-spacing: 0;
+  transform: rotate(-1.4deg);
+  transform-origin: left center;
+}
+
+.hand-note-right {
+  transform: rotate(1.2deg);
+}
+
+/* The quip that drops under the theme toggle. Rotated like the other
+   handwritten asides so it reads as scrawled in the margin, not as UI copy. */
+@keyframes quip-in {
+  from { opacity: 0; transform: translateY(-7px) rotate(-3deg); }
+  to   { opacity: 1; transform: translateY(0) rotate(-1.6deg); }
+}
+
+.toggle-quip {
+  font-family: var(--font-caveat), "Segoe Print", "Bradley Hand", cursive;
+  letter-spacing: 0;
+  transform: rotate(-1.6deg);
+  animation: quip-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle-quip { animation: none; }
+}
+
+/* ── Hand-drawn strokes ───────────────────────────────────────
+   Default state is FULLY DRAWN (`stroke-dashoffset: 0`), so a browser without
+   scroll-driven animation shows finished scribbles rather than nothing. The
+   undrawn state exists only inside the @supports block below.
+
+   `pathLength="1"` on the path (see Scribble.tsx) is what lets one keyframe
+   drive every variant. */
+
+.scribble-path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+}
+
+@keyframes draw-on {
+  from { stroke-dashoffset: 1; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* The vertical rule down the story column, drawn as you scroll it. */
+@keyframes grow-y {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+
+/* The rail is two stacked 1px columns: a faint static track showing the road
+   ahead, and this brighter line growing down it. One element at `--border`
+   (0.12 alpha) was invisible against `--bg2`, which lost the whole point of
+   drawing it. `--meta` is the dimmest token that actually reads. */
+.story-track {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--border) 6%,
+    var(--border) 94%,
+    transparent
+  );
+}
+
+.story-line {
+  transform-origin: 50% 0;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--meta) 6%,
+    var(--meta) 94%,
+    transparent
+  );
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    /* MUST be a `cover` range, not `entry`.
+       The `entry` phase lasts exactly as long as it takes the element's own
+       height to cross the viewport edge — and these underline SVGs are 10-12px
+       tall. On `entry` the stroke drew over ~12px of scroll, i.e. it snapped
+       between two frames and read as "not animating at all" (measured: 1.000 →
+       0.000 with no intermediate sample).
+
+       `cover` runs from first intersection to last, so a 12px element gets
+       ~100vh of scroll to play with. 25%→50% finishes as the word reaches the
+       middle of the screen: you scroll the sentence into reading position and
+       the marker lands just as it arrives. */
+    .scribble-path {
+      animation: draw-on linear both;
+      animation-timeline: view();
+      animation-range: cover 25% cover 50%;
+    }
+
+    /* For scribbles in the last screenful of the page.
+       The problem there is that the page runs out of scroll before the default
+       25%→50% range finishes, so the stroke freezes part-drawn.
+
+       This keeps the element's OWN `view()` timeline, which is the whole point:
+       `cover 0%` is *by definition* the moment the element enters the viewport, so
+       a range starting just above 0 cannot draw off-screen. An earlier attempt
+       anchored this to a named timeline on the section instead — the section
+       enters much sooner, so the draw started earlier in the page but finished
+       BEFORE the arrow itself was ever visible. Measured: fully drawn at page 94%,
+       arrow first on screen at page 94%. Nothing to watch.
+
+       Ending at 26% is the other half. A final section can't be scrolled past, so
+       the arrow's own reachable progress tops out around 39% here (49% on a
+       shorter viewport) — 26% completes the stroke with headroom instead of
+       stranding it. Net: draws from ~93% to ~97% of the page, on screen the whole
+       way. */
+    .scribble-early .scribble-path {
+      animation-range: cover 4% cover 26%;
+    }
+
+    /* The rule spans the whole beat list, so it's taller than the viewport —
+       and `entry` is ill-defined for an element that never fully fits (its
+       start and end coincide). `cover` is measured from first to last
+       intersection regardless of height, so the fill tracks scrolling
+       predictably. Ends at 55% so the rule is complete by the last beat rather
+       than still creeping as the section leaves. */
+    .story-line {
+      animation: grow-y linear both;
+      animation-timeline: view();
+      animation-range: cover 0% cover 55%;
+    }
   }
 }

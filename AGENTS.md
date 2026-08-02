@@ -50,6 +50,55 @@ desktop. It keeps the first *section* slot, and the hero deliberately carries
 only trending titles — Home does not grow more browse carousels. See
 `DESIGN_ROADMAP.md`.
 
+## Landing page: the handoff sells features we don't have
+
+`src/app/(marketing)/page.tsx` deliberately **diverges from the handoff's
+landing screen**, and the divergence is not a gap to close:
+
+- The handoff's 5-feature list includes **Recommend to friends**, and its
+  showcase band is half a **"From a friend"** recommendation card. Both are on
+  the v1 OUT list above. The page ships **four** features and a stats card
+  instead. Don't port the social copy back before the social feature exists —
+  the root `metadata.description` was also scrubbed of "swap recommendations
+  with friends" for the same reason.
+- The handoff's **testimonial card is a fabricated quote**. It's omitted until
+  there are real users to quote.
+- **Colour IS allowed on the landing page, and only there.** The
+  monochrome-chrome rule governs the *app*; `/` is a marketing surface. Accent
+  colour comes from `--grad-1/2/3` (surfaces), `--gradt-1/2/3` (text) and
+  `--tint-1/2` (washes) in `globals.css`. Every stop is lifted from a palette
+  the handoff already sanctions — tier-S gold, tier-A ember, Rosé banner — so
+  it isn't a new palette. **Do not carry these tokens into the app shell.**
+  Two contrast constraints are load-bearing:
+  - Gradient *surfaces* use `--grad-ink` (near-black) for text, not white.
+    White clears AA on the ember and rosé stops but hits ~2.1:1 on amber, so it
+    fails at the light end of every button.
+  - Gradient *text* needs separate, darker stops in the light theme
+    (`--gradt-*`); the vivid surface stops sit at ~1.5:1 on pale paper. That's
+    why there are two sets rather than one.
+- The page is **static with almost no JS** — the only client component is
+  `ThemeToggle`; there are no fetches, so it stays the only `○` route in the
+  build. Scroll choreography is CSS `animation-timeline` + `position: sticky`,
+  each scroll rule gated behind `@supports` **and** `prefers-reduced-motion`,
+  with the un-animated state being the *finished* state. Don't add an
+  IntersectionObserver, and don't write a `.reveal { opacity: 0 }` default —
+  that hides content in Firefox.
+- **Two CSS traps are documented in `globals.css`; read them before editing it.**
+  (1) `overflow: hidden` on an ancestor makes it a scroll container and silently
+  freezes every `view()`-driven animation inside — this is why the landing
+  sections don't clip, and why nothing animated goes inside `.marquee-row`.
+  (2) `animation-range: entry …` lasts only as long as the element's own height,
+  so it's useless on short elements (a 12px underline drew over 12px of scroll);
+  the reveals and scribbles use `cover` ranges instead.
+- **Theme:** `dark` is the default and is emitted on `<html>` by the server. A
+  small inline script in the root layout removes it before first paint if the
+  user saved `theme: light`, so dark users see no flash and there's no
+  hydration mismatch. `ThemeToggle` flips the class and writes localStorage.
+- Signed-in visitors are redirected `/` → `/home` **in `src/proxy.ts`**, which
+  already has the user. Doing it in the page would read cookies and make `/`
+  dynamic. The proxy deliberately does not check onboarding state — `(app)`'s
+  layout owns that guard.
+
 ## Design handoff
 
 Source-of-truth reference lives at `C:\Users\ghans\Desktop\BingeTrackr\design_handoff_trackr\`. The `.dc.html` files use a custom prototyping runtime — read the JSX-equivalent structure, do NOT port the `{{ }}` templating syntax literally. Rebuild each component in real React with shadcn/Tailwind.
@@ -98,6 +147,31 @@ See `supabase/README.md` for apply instructions. First migration goes via the SQ
 
 Never edit an applied migration file — write a new one that reverses/extends it.
 
+## TMDB `/discover` — never build params by hand
+
+Every browse row goes through `discoverTitles` / `discoverTitlesPage` in
+`src/lib/tmdb/client.ts`, configured from `src/lib/discover/axes.ts`. Do not call
+`/discover/*` directly, and do not add a query param outside `DiscoverParams`.
+
+The reason is that **TMDB silently ignores unknown params and returns 200** — a
+typo doesn't fail, it widens the row to the entire catalogue and still looks like
+a working feature. Three things it hides:
+
+- **The date and sort keys differ by type.** `primary_release_date` for movies,
+  `first_air_date` for TV. `primary_release_year` on `/discover/tv` is accepted
+  and ignored.
+- **Genre ids are not shared between movie and TV.** Movie `28 Action` has no TV
+  equivalent (`10759 Action & Adventure`).
+- **`sort_by=vote_average.desc` is unusable without a `vote_count.gte` floor**,
+  and the right floor depends on how narrow the query is — see
+  `LANGUAGE_RATING_FLOOR` in `axes.ts`, which carries the measurements. A flat
+  floor either buries the canon under 1-vote titles or empties smaller-language
+  rows entirely.
+
+Provider ids are region- and merger-sensitive (Disney+ Hotstar 122 is gone; IN
+uses JioHotstar 2336). Re-derive from `/watch/providers/movie?watch_region=IN`
+rather than guessing — a wrong id returns an empty row, not an error.
+
 ## Free-tier budget
 
 Deferred performance work lives in `OPTIMIZATIONS.md` — ranked, with measured
@@ -111,6 +185,7 @@ a feature to save a request; fix the query instead.
 - **Optimistic UI everywhere.** Mark-watched cannot wait for a round-trip. Use `useOptimistic`.
 - **No spinners.** Skeleton screens for every load. Primitives live in `src/components/trackr/LoadingSkeleton.tsx`; every dynamic route has a `loading.tsx` built from them. A skeleton must occupy the same box as the content it replaces — one that reflows on swap is worse than none.
 - **Navigation must acknowledge the click instantly.** Every dynamic route needs a `loading.tsx`, and slow sections stream behind `<Suspense>`. The rule on a page like `title/[type]/[id]`: an `await` at the top level delays the hero for every visitor, so if data isn't needed to render the hero, it belongs in a child component behind a Suspense boundary. Read the comment at the top of that page before adding one.
+- **A page of N independent sections is N async server components, not N awaits.** Discover's landing is the reference: each section fetches its own data inside its own boundary, so wall-clock is the slowest call rather than the sum. When those sections all need the same per-user data, wrap the reader in `cache()` (`getAllTrackStates`) — hoisting the fetch into the page to share it would force every section to resolve before any could render, which is the thing streaming exists to avoid.
 - **Test glassmorphism perf on a real ₹15-20k Android before shipping.** The `prefers-reduced-transparency` fallback is not enough by itself.
 
 ## Environment
