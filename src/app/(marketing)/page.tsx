@@ -5,7 +5,7 @@ import { BrandLockup, BrandMark } from "@/components/trackr/BrandMark";
 import { Scribble, Underlined } from "@/components/trackr/Scribble";
 import { ThemeToggle } from "@/components/trackr/ThemeToggle";
 import { INDIAN_LANGUAGES } from "@/lib/discover/axes";
-import { discoverTitles, posterUrl } from "@/lib/tmdb/client";
+import { discoverTitles, getTv, posterUrl } from "@/lib/tmdb/client";
 
 /**
  * The logged-out landing page at `/`.
@@ -179,10 +179,45 @@ function Hero() {
  * and which is the single most informative thing on the card. It also shows a
  * where-to-watch chip, so the mockup demonstrates two features rather than one.
  */
-function PhoneMockup() {
-  const watched = 17;
-  const total = 26;
+/**
+ * TMDB id for Demon Slayer, resolved against the live API rather than guessed
+ * (`/search/tv?query=Demon Slayer` → 85937, "Demon Slayer: Kimetsu no Yaiba",
+ * 7,385 votes — unambiguous). Fetched by id via `getTv` so the poster survives
+ * TMDB replacing the artwork; a hardcoded `poster_path` would eventually 404.
+ */
+const MOCKUP_TMDB_TV_ID = 85937;
+
+/**
+ * The episode numbers below are TMDB's, checked against `/tv/85937`:
+ * 63 episodes total, and "Swordsmith Village Arc" is **season 4** (11 eps), not
+ * season 2. The earlier copy said "S2 · E5 … 17/26" — wrong arc, and 26 is
+ * season 1's count rather than the series total. This audience is anime
+ * watchers; they would notice.
+ *
+ * Watched = S1 26 + S2 7 + S3 11 + 5 of S4 = 49 of 63.
+ */
+const MOCKUP = {
+  season: 4,
+  episode: 5,
+  nextEpisode: 6,
+  nextTitle: "Aren't You Going to Become a Hashira?",
+  watched: 49,
+  total: 63,
+} as const;
+
+async function PhoneMockup() {
+  const { watched, total } = MOCKUP;
   const pct = Math.round((watched / total) * 100);
+
+  // A missing key or a TMDB blip must not break the hero — fall back to the
+  // gradient tile, which is the handoff's specified placeholder anyway.
+  let poster: string | null = null;
+  try {
+    const show = await getTv(MOCKUP_TMDB_TV_ID);
+    poster = posterUrl(show.poster_path, "w342");
+  } catch (err) {
+    console.warn("[landing] mockup poster unavailable:", err);
+  }
 
   return (
     <div
@@ -208,27 +243,31 @@ function PhoneMockup() {
             className="glass flex gap-3.5 p-3.5"
             style={{ borderRadius: 18, boxShadow: "var(--shadow)" }}
           >
-            {/* Poster with a play affordance */}
-            <div className="relative shrink-0">
-              <div
-                className="grid place-items-center font-display font-extrabold text-3xl"
-                style={{
-                  width: 68,
-                  height: 102,
-                  borderRadius: 10,
-                  background: "linear-gradient(150deg,#5a1d10,#ff6b35)",
-                  color: "rgba(255,255,255,.24)",
-                }}
-              >
-                D
-              </div>
-              <span
-                className="absolute inset-0 grid place-items-center"
-                style={{ borderRadius: 10 }}
-              >
-                <span className="grid place-items-center w-7 h-7 rounded-full bg-black/45 text-white backdrop-blur-sm">
-                  <Play className="w-3 h-3 fill-current" strokeWidth={0} />
-                </span>
+            {/* Real poster art. The gradient tile underneath shows through only
+                while the image decodes, or if the fetch above failed. */}
+            <div
+              className="relative shrink-0 overflow-hidden"
+              style={{
+                width: 68,
+                height: 102,
+                borderRadius: 10,
+                background: "linear-gradient(150deg,#5a1d10,#ff6b35)",
+              }}
+            >
+              {poster && (
+                <Image
+                  src={poster}
+                  alt=""
+                  fill
+                  sizes="68px"
+                  className="object-cover"
+                />
+              )}
+              {/* Play affordance, moved off-centre to a corner. Centred, it sat
+                  right on top of the poster's focal point — which is what made
+                  the artwork look obscured. */}
+              <span className="absolute bottom-1 right-1 grid place-items-center w-6 h-6 rounded-full bg-black/55 text-white backdrop-blur-sm">
+                <Play className="w-2.5 h-2.5 fill-current" strokeWidth={0} />
               </span>
             </div>
 
@@ -238,7 +277,7 @@ function PhoneMockup() {
                   className="px-1.5 py-0.5 rounded-md font-display font-bold text-[9px]"
                   style={{ background: "var(--surface2)" }}
                 >
-                  S2 · E5
+                  S{MOCKUP.season} · E{MOCKUP.episode}
                 </span>
                 <span
                   className="px-1.5 py-0.5 rounded-md font-display font-bold text-[9px]"
@@ -254,8 +293,8 @@ function PhoneMockup() {
               <p className="font-display font-bold text-sm leading-tight">
                 Demon Slayer
               </p>
-              <p className="text-meta text-[10px] leading-snug mt-0.5">
-                Next: E6 — Swordsmith Village
+              <p className="text-meta text-[10px] leading-snug mt-0.5 line-clamp-1">
+                Next: E{MOCKUP.nextEpisode} — {MOCKUP.nextTitle}
               </p>
 
               {/* Progress — the most useful line on the card. */}
@@ -281,9 +320,11 @@ function PhoneMockup() {
               <div className="flex items-center gap-1.5 mt-2.5">
                 <span className="grad-surface inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-display font-bold text-[10px]">
                   <Check className="w-3 h-3" strokeWidth={2.8} />
-                  Mark E6
+                  Mark E{MOCKUP.nextEpisode}
                 </span>
-                {/* Where-to-watch chip */}
+                {/* Where-to-watch chip. Crunchyroll is not decorative: verified
+                    against `/tv/85937/watch/providers` that it's a flatrate
+                    provider for this show in region IN (provider id 283). */}
                 <span
                   className="inline-flex items-center gap-1 px-1.5 py-1.5 rounded-lg text-[9px] font-semibold"
                   style={{ background: "var(--surface2)" }}
@@ -309,9 +350,11 @@ function PhoneMockup() {
             </span>
             <div className="min-w-0">
               <p className="font-display font-bold text-[11px]">
-                Episode 5 marked watched
+                Episode {MOCKUP.episode} marked watched
               </p>
-              <p className="text-meta text-[9px]">18/26 · 4 h 12 m logged</p>
+              <p className="text-meta text-[9px]">
+                {MOCKUP.watched}/{MOCKUP.total} · 19 h 36 m logged
+              </p>
             </div>
           </div>
         </div>

@@ -1,8 +1,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ShareButton } from "@/components/trackr/ShareButton";
+import { signOutAction } from "@/lib/auth/actions";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { posterUrl } from "@/lib/tmdb/client";
 import {
@@ -142,6 +144,32 @@ function IdentityBlock({
           <Button asChild variant="ghost" size="sm">
             <Link href="/home">Home</Link>
           </Button>
+        )}
+        {/*
+          Mobile-only log out — and the ONLY log out on mobile.
+          `UserChip` (which owns the desktop log out) lives in `Sidebar`, which is
+          `hidden md:flex`, so phones had no way to sign out at all. Settings is
+          the eventual proper home for this; it isn't built yet, and the mobile tab
+          bar's Profile tab points here, so this is the reachable account surface.
+
+          `md:hidden` because desktop already has it in the sidebar, and gated on
+          `isOwner` so it never renders on someone else's public profile.
+
+          A plain <button> in a <form> rather than <Button>, matching `UserChip`:
+          the server action then works with no client JS. `signOutAction`
+          redirects to `/`, so this also lands the user on the landing page.
+        */}
+        {isOwner && (
+          <form action={signOutAction} className="md:hidden">
+            <button
+              type="submit"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[0.8rem] font-medium hover:bg-secondary transition"
+              style={{ color: "var(--status-dropped)" }}
+            >
+              <LogOut size={14} />
+              Log out
+            </button>
+          </form>
         )}
       </div>
     </div>
