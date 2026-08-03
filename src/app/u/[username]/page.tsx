@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { ChevronRight, LogOut, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ShareButton } from "@/components/trackr/ShareButton";
 import { signOutAction } from "@/lib/auth/actions";
@@ -75,14 +75,38 @@ export default async function PublicProfilePage({
           profile={profile}
           isOwner={isOwner}
         />
-        <CountsRow counts={counts} />
+        <CountsRow counts={counts} isOwner={isOwner} />
         {activity.length > 0 && <ActivitySection items={activity} />}
         {publicLists.length > 0 && <PublicListsSection lists={publicLists} />}
         {activity.length === 0 && (
           <EmptyProfile isOwner={isOwner} username={profile.username} />
         )}
+        {/*
+          Log out lives at the bottom of the page now, not in the top action
+          row — a destructive-ish, rarely-used action doesn't belong next to
+          Share at the top of someone's own profile. Still `isOwner`-gated and
+          `md:hidden`: desktop's real home for this is the sidebar's UserChip.
+        */}
+        {isOwner && <SignOutSection />}
       </div>
     </main>
+  );
+}
+
+function SignOutSection() {
+  return (
+    <div className="md:hidden pt-4 border-t" style={{ borderColor: "var(--border)" }}>
+      <form action={signOutAction}>
+        <button
+          type="submit"
+          className="w-full flex items-center justify-center gap-2 h-11 rounded-xl text-sm font-semibold hover:bg-secondary transition"
+          style={{ color: "var(--status-dropped)" }}
+        >
+          <LogOut size={16} />
+          Log out
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -146,30 +170,19 @@ function IdentityBlock({
           </Button>
         )}
         {/*
-          Mobile-only log out — and the ONLY log out on mobile.
-          `UserChip` (which owns the desktop log out) lives in `Sidebar`, which is
-          `hidden md:flex`, so phones had no way to sign out at all. Settings is
-          the eventual proper home for this; it isn't built yet, and the mobile tab
-          bar's Profile tab points here, so this is the reachable account surface.
-
-          `md:hidden` because desktop already has it in the sidebar, and gated on
-          `isOwner` so it never renders on someone else's public profile.
-
-          A plain <button> in a <form> rather than <Button>, matching `UserChip`:
-          the server action then works with no client JS. `signOutAction`
-          redirects to `/`, so this also lands the user on the landing page.
+          Settings entry point. Now that `/settings` is a real page, this is the
+          mobile-reachable way in — the mobile tab bar's Profile tab points here
+          per the design handoff's fixed 4-tab layout, so it has no tab of its
+          own. Shown on both surfaces (not `md:hidden`): desktop already has
+          `UserChip`'s "Settings" item in the sidebar, but a quick icon button
+          here is a harmless second way in, same as `Home` above it.
         */}
         {isOwner && (
-          <form action={signOutAction} className="md:hidden">
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[0.8rem] font-medium hover:bg-secondary transition"
-              style={{ color: "var(--status-dropped)" }}
-            >
-              <LogOut size={14} />
-              Log out
-            </button>
-          </form>
+          <Button asChild variant="ghost" size="icon-sm" aria-label="Settings">
+            <Link href="/settings">
+              <Settings size={16} />
+            </Link>
+          </Button>
         )}
       </div>
     </div>
@@ -200,18 +213,29 @@ function PublicPill({ isPublic }: { isPublic: boolean }) {
 
 // ─── Counts row ────────────────────────────────────────────────────────────
 
-function CountsRow({ counts }: { counts: PublicProfileCounts }) {
+/**
+ * Owner-only click-through to `/stats` — that page always shows the CURRENT
+ * session's own numbers (it's under `(app)/`, gated by `requireOnboardedUser`),
+ * so making this clickable on a profile you're VIEWING rather than owning would
+ * silently take a visitor to their own stats while looking like it's showing
+ * the profile owner's. Hence `isOwner` gates the link, not just the label.
+ */
+function CountsRow({
+  counts,
+  isOwner,
+}: {
+  counts: PublicProfileCounts;
+  isOwner: boolean;
+}) {
   const items = [
     { label: "Shows", value: counts.shows },
     { label: "Episodes", value: counts.episodes },
     { label: "Hours", value: counts.hours },
     { label: "Lists", value: counts.lists },
   ];
-  return (
-    <div
-      className="glass p-5 grid grid-cols-4 gap-2 sm:gap-4"
-      style={{ borderRadius: "var(--radius-card)" }}
-    >
+
+  const grid = (
+    <div className="grid grid-cols-4 gap-2 sm:gap-4 flex-1">
       {items.map((it) => (
         <div key={it.label} className="flex flex-col gap-0.5 items-center sm:items-start">
           <p className="text-xl sm:text-3xl font-extrabold tabular-nums leading-none">
@@ -223,6 +247,39 @@ function CountsRow({ counts }: { counts: PublicProfileCounts }) {
         </div>
       ))}
     </div>
+  );
+
+  if (!isOwner) {
+    return (
+      <div
+        className="glass p-5 flex items-center"
+        style={{ borderRadius: "var(--radius-card)" }}
+      >
+        {grid}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href="/stats"
+      // `.glass` is an unlayered rule, so it always wins the `background`
+      // property over a Tailwind utility (which lives in a cascade layer) —
+      // `hover:bg-secondary` here would have compiled fine and done nothing
+      // visible. `hover:brightness-110` doesn't compete with `.glass` for any
+      // property, which is why it's the same choice TopBar's avatar link makes
+      // for hovering a glass-adjacent surface.
+      className="glass p-5 flex items-center gap-2 hover:brightness-110 transition"
+      style={{ borderRadius: "var(--radius-card)" }}
+    >
+      {grid}
+      <ChevronRight
+        size={18}
+        className="shrink-0 hidden sm:block"
+        style={{ color: "var(--meta)" }}
+        aria-hidden
+      />
+    </Link>
   );
 }
 

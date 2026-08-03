@@ -1,44 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useTheme } from "@/lib/theme";
 
 /**
  * Dark/light switch: a pill track with a gradient knob that slides across, and a
  * handwritten quip that drops underneath on every toggle.
  *
- * The theme *is* the `dark` class on `<html>`, matching the token setup in
- * `globals.css` (`:root` is light, `.dark` overrides it). The class is applied
- * before first paint by the inline script in the root layout; this component only
- * flips it and records the choice.
- *
- * Read via `useSyncExternalStore` rather than `useState` + `useEffect`, because
- * the DOM class is genuinely external state that the layout script writes before
- * React ever runs. That gets three things for free:
- *
- * - **No hydration mismatch.** `getServerSnapshot` returns `true`, which is
- *   always right: the server unconditionally emits `class="dark"`. React uses it
- *   for the hydration render, then reconciles against the live DOM.
- * - **No setState-in-effect**, which `react-hooks/set-state-in-effect` flags.
- * - **It tracks changes it didn't cause** — the MutationObserver means anything
- *   else flipping the class keeps this in sync.
+ * The flip/read logic itself lives in `useTheme` (`src/lib/theme.ts`), shared
+ * with the app's plain `SettingsThemeToggle` — this component only adds the
+ * landing-page-specific quips and `.glass-liquid` styling on top.
  */
-
-/** Module-level so the identity is stable and React doesn't resubscribe. */
-function subscribe(onStoreChange: () => void) {
-  const observer = new MutationObserver(onStoreChange);
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  return () => observer.disconnect();
-}
-
-const getSnapshot = () => document.documentElement.classList.contains("dark");
-
-/** The server always renders dark — it's the design system's default. */
-const getServerSnapshot = () => true;
 
 /**
  * Going to light gets mocked; coming back to dark gets praised.
@@ -73,7 +47,7 @@ const DARK_QUIPS = [
 const QUIP_MS = 4200;
 
 export function ThemeToggle({ className }: { className?: string }) {
-  const isDark = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const { isDark, setDark } = useTheme();
 
   // `id` forces a fresh element per toggle so the entry animation replays even
   // when the same line comes up twice in a row.
@@ -102,13 +76,7 @@ export function ThemeToggle({ className }: { className?: string }) {
 
   const toggle = () => {
     const nextIsDark = !isDark;
-    document.documentElement.classList.toggle("dark", nextIsDark);
-    try {
-      localStorage.setItem("theme", nextIsDark ? "dark" : "light");
-    } catch {
-      // Private mode / storage disabled. The toggle still works for this page
-      // view, it just won't be remembered. Not worth surfacing.
-    }
+    setDark(nextIsDark);
 
     const lines = nextIsDark ? DARK_QUIPS : LIGHT_QUIPS;
     const cursor = nextIsDark ? "dark" : "light";

@@ -65,15 +65,14 @@ export function UserChip({ username, displayName }: Props) {
             <span className="text-sm">Your profile</span>
           </Link>
         </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled
-          className="flex items-center gap-2 py-2 px-2 opacity-50"
-        >
-          <Settings size={14} />
-          <span className="text-sm">Settings</span>
-          <span className="ml-auto text-[10px] tracking-widest font-semibold text-meta">
-            SOON
-          </span>
+        <DropdownMenuItem asChild>
+          <Link
+            href="/settings"
+            className="flex items-center gap-2 py-2 px-2 cursor-pointer"
+          >
+            <Settings size={14} />
+            <span className="text-sm">Settings</span>
+          </Link>
         </DropdownMenuItem>
         <div className="my-1 h-px" style={{ background: "var(--border)" }} />
         <form action={signOutAction}>

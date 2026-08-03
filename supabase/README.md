@@ -13,6 +13,8 @@ Version-controlled SQL for BingeTrackr's Postgres schema. Two paths to apply —
 | `20260731120002_media_tmdb_id_cache.sql` | `media.tmdb_id` cache column (#7) | yes |
 | `20260731120003_continue_watching_rpc.sql` | `get_continue_watching()` (#1) | yes |
 | `20260731120004_stats_rpcs.sql` | Stats / on-this-day / profile-count RPCs (#4) | yes |
+| `20260804120001_stats_top_shows_by_minutes.sql` | `get_stats_top_shows` ranks by hours watched, not episode count | **no — run this one** |
+| `20260804120002_backfill_resume_pointer.sql` | One-time repair of `show_progress` rows left stale by unmarks taken before the app-code fix existed | **no — run this one too** |
 
 Apply in numeric order — the RLS migration depends on tables from the schema
 migration, and `…0003` depends on `…0002` which depends on `…0001`.

@@ -76,13 +76,20 @@ landing screen**, and the divergence is not a gap to close:
   - Gradient *text* needs separate, darker stops in the light theme
     (`--gradt-*`); the vivid surface stops sit at ~1.5:1 on pale paper. That's
     why there are two sets rather than one.
-- The page is **static with almost no JS** — the only client component is
-  `ThemeToggle`; there are no fetches, so it stays the only `○` route in the
-  build. Scroll choreography is CSS `animation-timeline` + `position: sticky`,
-  each scroll rule gated behind `@supports` **and** `prefers-reduced-motion`,
-  with the un-animated state being the *finished* state. Don't add an
-  IntersectionObserver, and don't write a `.reveal { opacity: 0 }` default —
-  that hides content in Firefox.
+- The page is **static with almost no JS** — the only client components are
+  `ThemeToggle` and `ScrollToLink`; there are no fetches, so it stays the only
+  `○` route in the build. Scroll choreography is CSS `animation-timeline` +
+  `position: sticky`, each scroll rule gated behind `@supports` **and**
+  `prefers-reduced-motion`, with the un-animated state being the *finished*
+  state. Don't add an IntersectionObserver, and don't write a
+  `.reveal { opacity: 0 }` default — that hides content in Firefox.
+- **The `#why` / `#free` jump links go through `ScrollToLink`, not a plain
+  `<a href="#why">`.** A native hash anchor only smooth-scrolls on the FIRST
+  click — clicking it again when the URL already has that hash produces no
+  `hashchange` event, so nothing re-fires, and the second click is a silent
+  no-op. `ScrollToLink` calls `scrollIntoView()` manually on every click
+  instead, so it works every time. It still renders a real `href="#…"` `<a>`
+  underneath for right-click/no-JS fallback.
 - **Two CSS traps are documented in `globals.css`; read them before editing it.**
   (1) `overflow: hidden` on an ancestor makes it a scroll container and silently
   freezes every `view()`-driven animation inside — this is why the landing
@@ -115,7 +122,7 @@ src/
 │   ├── (app)/             authed shell (home, library, discover, lists, stats, tiers, settings)
 │   ├── u/[username]/      public profile — SSR for OG previews
 │   ├── title/[type]/[id]/ public title page — SEO
-│   ├── login, signup, onboarding
+│   ├── login, signup, onboarding, forgot-password, reset-password
 │   └── api/cron/          Vercel Cron endpoints (protected by CRON_SECRET)
 ├── components/
 │   ├── ui/                shadcn primitives (do not hand-edit)

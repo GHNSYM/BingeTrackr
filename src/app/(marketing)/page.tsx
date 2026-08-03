@@ -1,8 +1,9 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowRight, Check, Play } from "lucide-react";
+import { ArrowRight, Check } from "lucide-react";
 import { BrandLockup, BrandMark } from "@/components/trackr/BrandMark";
 import { Scribble, Underlined } from "@/components/trackr/Scribble";
+import { ScrollToLink } from "@/components/trackr/ScrollToLink";
 import { ThemeToggle } from "@/components/trackr/ThemeToggle";
 import { INDIAN_LANGUAGES } from "@/lib/discover/axes";
 import { discoverTitles, getTv, posterUrl } from "@/lib/tmdb/client";
@@ -27,8 +28,10 @@ import { discoverTitles, getTv, posterUrl } from "@/lib/tmdb/client";
  * `--tint-*`, whose stops are lifted from palettes the handoff already sanctions
  * (tier-S gold, tier-A ember, Rosé banner). Don't carry these into the app shell.
  *
- * **Almost zero JS.** Only `ThemeToggle` is a client component; the scroll
- * choreography is CSS scroll-driven animation plus `position: sticky`.
+ * **Almost zero JS.** `ThemeToggle` and `ScrollToLink` (the two `#why`/`#free`
+ * jump links — see that file for why a plain hash anchor isn't enough) are the
+ * only client components; the scroll choreography itself is CSS scroll-driven
+ * animation plus `position: sticky`.
  *
  * **Unbuilt features are labelled unbuilt.** Items 7 and 8 carry a "Not yet"
  * badge — public lists/tiers and recommend-to-friends are both on the v1 OUT
@@ -137,12 +140,12 @@ function Hero() {
 
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 mt-2">
               <GradientCta href="/signup">Create account</GradientCta>
-              <Link
-                href="#why"
+              <ScrollToLink
+                targetId="why"
                 className="inline-flex items-center justify-center gap-2 h-13 px-6 rounded-2xl border border-border font-semibold text-sm hover:bg-secondary transition-colors"
               >
                 Why this app
-              </Link>
+              </ScrollToLink>
             </div>
 
             {/* The asterisk is a real footnote, not decoration — it jumps to the
@@ -150,13 +153,13 @@ function Hero() {
                 reader is already headed. */}
             <p className="text-meta text-xs">
               Free. No card, no ads.
-              <Link
-                href="#free"
+              <ScrollToLink
+                targetId="free"
                 className="ml-0.5 hover:text-foreground transition-colors"
-                aria-label="Read why this is free"
+                ariaLabel="Read why this is free"
               >
                 *
-              </Link>
+              </ScrollToLink>
             </p>
           </div>
 
@@ -244,7 +247,11 @@ async function PhoneMockup() {
             style={{ borderRadius: 18, boxShadow: "var(--shadow)" }}
           >
             {/* Real poster art. The gradient tile underneath shows through only
-                while the image decodes, or if the fetch above failed. */}
+                while the image decodes, or if the fetch above failed.
+
+                No play affordance on purpose — the app doesn't play video, it
+                tracks what you've watched elsewhere. Advertising a play button
+                would promise a feature we don't have. */}
             <div
               className="relative shrink-0 overflow-hidden"
               style={{
@@ -263,12 +270,6 @@ async function PhoneMockup() {
                   className="object-cover"
                 />
               )}
-              {/* Play affordance, moved off-centre to a corner. Centred, it sat
-                  right on top of the poster's focal point — which is what made
-                  the artwork look obscured. */}
-              <span className="absolute bottom-1 right-1 grid place-items-center w-6 h-6 rounded-full bg-black/55 text-white backdrop-blur-sm">
-                <Play className="w-2.5 h-2.5 fill-current" strokeWidth={0} />
-              </span>
             </div>
 
             <div className="flex-1 min-w-0 flex flex-col">
@@ -322,20 +323,22 @@ async function PhoneMockup() {
                   <Check className="w-3 h-3" strokeWidth={2.8} />
                   Mark E{MOCKUP.nextEpisode}
                 </span>
-                {/* Where-to-watch chip. Crunchyroll is not decorative: verified
+                {/* Where-to-watch chip. Netflix is not decorative: verified
                     against `/tv/85937/watch/providers` that it's a flatrate
-                    provider for this show in region IN (provider id 283). */}
+                    provider for this show in region IN (id 8, display_priority 0
+                    — the top-ranked provider for India, which is also why the
+                    Discover engine's provider rail leads with it). */}
                 <span
                   className="inline-flex items-center gap-1 px-1.5 py-1.5 rounded-lg text-[9px] font-semibold"
                   style={{ background: "var(--surface2)" }}
                 >
                   <span
                     className="grid place-items-center w-3.5 h-3.5 rounded font-display font-extrabold text-[7px] text-white"
-                    style={{ background: "#f47521" }}
+                    style={{ background: "#e50914" }}
                   >
-                    C
+                    N
                   </span>
-                  Crunchyroll
+                  Netflix
                 </span>
               </div>
             </div>

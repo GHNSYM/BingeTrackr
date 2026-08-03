@@ -51,9 +51,7 @@ export default async function LibraryPage({
       </header>
 
       <PosterSizeShell
-        initial={posterSize}
-        // Watching is a list of resume cards, not a poster grid — nothing to size.
-        showToggle={activeTab !== "watching"}
+        size={posterSize}
         toolbar={<LibraryTabs activeTab={activeTab} counts={counts} />}
       >
         {activeTab === "watching" && <WatchingTab />}

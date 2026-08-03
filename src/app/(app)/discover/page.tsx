@@ -80,7 +80,7 @@ export default async function DiscoverPage({
         </div>
 
         <PosterSizeShell
-          initial={posterSize}
+          size={posterSize}
           toolbar={<TypePills active={typeFilter} query={query} />}
         >
           {query ? (

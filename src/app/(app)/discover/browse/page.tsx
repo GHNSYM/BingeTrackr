@@ -87,7 +87,7 @@ export default async function BrowsePage({
 
         <Filters q={q} genres={genres} />
 
-        <PosterSizeShell initial={posterSize}>
+        <PosterSizeShell size={posterSize}>
           {results.length === 0 ? (
             <EmptyBrowse />
           ) : (

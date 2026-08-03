@@ -36,6 +36,98 @@ async function dropFromWatchlist(
   }
 }
 
+/**
+ * Re-derives show_progress's resume pointer from what's ACTUALLY watched.
+ *
+ * Marking an episode always sets the pointer explicitly (see
+ * `markEpisodeWatchedAction`), but unmarking has nothing to set it TO — without
+ * this, the pointer goes stale and can point past episodes that are no longer
+ * watched. Concretely: mark E1 and E2 (pointer -> E2), unmark E1 (pointer still
+ * E2, fine, E2 is still watched), then unmark E2 too — the pointer was never
+ * touched, so `get_continue_watching`'s "first episode after (season, 2)" lookup
+ * offers E3, even though nothing is watched at all anymore.
+ *
+ * Ordered by (season_number, episode_number) — narrative position, not
+ * `watched_at`. That matches the schema comment on `show_progress` ("don't
+ * derive the resume point from MAX(watched_at)") and mirrors exactly what
+ * `get_continue_watching`'s own "next episode" lookup orders by, so the pointer
+ * and the next-episode query stay speaking the same language.
+ *
+ * Call this after ANY delete from `watched_entries` for a show — both the
+ * single-episode and bulk season unmark paths need it.
+ */
+async function recomputeResumePointer(
+  supabase: SupabaseClient,
+  userId: string,
+  mediaId: string,
+): Promise<void> {
+  const { data: watched, error: watchedError } = await supabase
+    .from("watched_entries")
+    .select(
+      "episode_id, episodes!inner ( episode_number, seasons!inner ( season_number ) )",
+    )
+    .eq("user_id", userId)
+    .eq("media_id", mediaId)
+    .not("episode_id", "is", null);
+
+  if (watchedError) {
+    console.error("recomputeResumePointer read failed:", watchedError.message);
+    return;
+  }
+
+  type Row = {
+    episode_id: string;
+    episodes: { episode_number: number; seasons: { season_number: number } };
+  };
+
+  // Bounded to one show's watched episodes — never the "read everything" shape
+  // `fetchAllRows` exists to guard against.
+  const furthest = ((watched ?? []) as unknown as Row[])
+    .slice()
+    .sort((a, b) => {
+      const seasonDiff =
+        b.episodes.seasons.season_number - a.episodes.seasons.season_number;
+      return seasonDiff !== 0
+        ? seasonDiff
+        : b.episodes.episode_number - a.episodes.episode_number;
+    })[0];
+
+  // Keep whatever status the show already has — this only corrects the
+  // pointer, never the watching/paused/completed/dropped state. Fetched rather
+  // than omitted because `status` is NOT NULL with no default: on the (edge-case,
+  // shouldn't-happen) INSERT path, an upsert with no `status` would violate that
+  // constraint outright.
+  const { data: currentProgress } = await supabase
+    .from("show_progress")
+    .select("status")
+    .eq("user_id", userId)
+    .eq("media_id", mediaId)
+    .maybeSingle();
+
+  // Deliberately does NOT touch `status_changed_at`. That column drives Home's
+  // "Recently watched" ordering (`getRecentlyWatched`, sorted by it descending) —
+  // bumping it here would make UNmarking an episode jump a show to the top of
+  // "recently watched", which is backwards. Omitting a column from a Supabase
+  // upsert leaves the existing value alone on the UPDATE arm (the one this always
+  // takes in practice, since unmarking requires a show_progress row to already
+  // exist); only the columns listed below get overwritten.
+  const { error: progressError } = await supabase.from("show_progress").upsert(
+    {
+      user_id: userId,
+      media_id: mediaId,
+      current_season: furthest ? furthest.episodes.seasons.season_number : null,
+      current_episode: furthest ? furthest.episodes.episode_number : null,
+      last_watched_episode: furthest ? furthest.episode_id : null,
+      status: currentProgress?.status ?? "watching",
+    },
+    { onConflict: "user_id,media_id" },
+  );
+
+  if (progressError) {
+    console.error("recomputeResumePointer write failed:", progressError.message);
+  }
+}
+
 // ─── Movie actions ─────────────────────────────────────────────────────────
 
 export async function markMovieWatchedAction(
@@ -194,8 +286,12 @@ export async function unmarkEpisodeAction(args: {
     .eq("episode_id", args.episodeId);
 
   if (error) return { error: error.message };
+
+  await recomputeResumePointer(supabase, user.id, args.mediaId);
+
   revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
+  revalidatePath("/library");
   return { ok: true };
 }
 
@@ -293,8 +389,11 @@ export async function markSeasonWatchedAction(args: {
 }
 
 /**
- * Delete all watched_entries for episodes in a season. Leaves show_progress
- * alone (user can manually move the resume point if they want).
+ * Delete all watched_entries for episodes in a season, then recompute the
+ * resume pointer (see `recomputeResumePointer`) — this used to leave
+ * show_progress alone entirely, which is the bulk-action version of the same
+ * bug `unmarkEpisodeAction` had: unmark a season that included the current
+ * resume point, and Continue Watching kept offering an episode past it.
  */
 export async function unmarkSeasonWatchedAction(args: {
   mediaId: string;
@@ -323,8 +422,11 @@ export async function unmarkSeasonWatchedAction(args: {
 
   if (error) return { error: error.message };
 
+  await recomputeResumePointer(supabase, user.id, args.mediaId);
+
   revalidatePath("/title/[type]/[id]", "layout");
   revalidatePath("/home");
+  revalidatePath("/library");
   return { ok: true };
 }
 

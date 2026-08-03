@@ -212,6 +212,24 @@
   html {
     @apply font-sans;
     letter-spacing: -0.01em;
+    /* Smooth in-page anchor jumps — motivated by the landing page's `#why` /
+       `#free` links, which used to snap instantly. Safe app-wide: `(app)/*`
+       routes scroll their own `overflow-y-auto` div (see AppShell), not
+       `html`, and no route outside the landing page has a fragment link, so
+       this has nothing else to affect. Must live on `html`/`:root` rather than
+       a scoped class — the browser smooth-scrolls whichever element is the
+       document's actual scrolling box for a `#fragment` jump, regardless of
+       which element the link itself sits inside. */
+    scroll-behavior: smooth;
+  }
+
+  /* `scroll-behavior: smooth` does NOT automatically respect this preference —
+     unlike a CSS `animation`/`transition`, browsers happily smooth-scroll
+     regardless, so it has to be turned off by hand. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
   }
   body {
     @apply bg-background text-foreground;
