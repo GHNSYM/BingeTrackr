@@ -1,9 +1,37 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { createClient } from "@/lib/supabase/server";
+
+/**
+ * The origin to build auth email links against — derived from the actual
+ * incoming request, not `NEXT_PUBLIC_APP_URL`.
+ *
+ * That env var is a static string (`.env` has it hardcoded to
+ * `http://localhost:3000`), so it's only ever correct for ONE environment at a
+ * time. Whichever value ends up set in Vercel's production env is what every
+ * deploy gets — including every PREVIEW deployment, which each get their own
+ * unique `*.vercel.app` URL that a static var could never point at correctly.
+ * This is exactly what sent a password-reset email to a real user pointing at
+ * `localhost:3000` instead of the production domain.
+ *
+ * Vercel's edge sets `x-forwarded-host` / `x-forwarded-proto` to the public
+ * request's real host and scheme; local `next dev` has no proxy in front of it
+ * and sets neither, so the scheme falls back to `http` for a `localhost` host
+ * and `https` otherwise. `NEXT_PUBLIC_APP_URL` stays as the last-resort
+ * fallback for the rare case headers are unavailable.
+ */
+async function getAppOrigin(): Promise<string> {
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  if (!host) return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+
+  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  return `${proto}://${host}`;
+}
 
 export type ActionState = {
   error?: string;
@@ -61,7 +89,7 @@ export async function signUpAction(
     email,
     password,
     options: {
-      emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/auth/callback`,
+      emailRedirectTo: `${await getAppOrigin()}/auth/callback`,
     },
   });
 
@@ -167,7 +195,7 @@ export async function requestPasswordResetAction(
 
   const supabase = await createClient();
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/auth/callback?next=/reset-password`,
+    redirectTo: `${await getAppOrigin()}/auth/callback?next=/reset-password`,
   });
 
   if (error) return { error: error.message };

@@ -153,6 +153,51 @@ returns `null` cleanly and falls through to TMDB.
 
 ---
 
+### 12. Vercel Image Optimization hit 75% of the free-tier monthly quota — **DONE 2026-08-04**
+
+Vercel's Hobby plan includes 5,000 Image Optimization **transformations**/month
+— one per unique `(source URL, width bucket, format)` `next/image` ever
+requests, cached after that. The alert came at 75% (3,750/5,000) via email, not
+a metric we were watching; this is the "metric said so" this doc's rule asks
+for, upgrading the speculative P3 bullet below into a real fix.
+
+**Not a bug in any one place — a shape of the app.** BingeTrackr deliberately
+surfaces a large, ever-shifting slice of TMDB's catalogue (Discover's
+genre/language/provider/decade axes, free-text search, any title page a visitor
+or crawler lands on), and usage scales with how many *distinct* titles get
+shown, not with total traffic. That's the intended feature, not the thing to
+cut — see the rule at the top of this doc.
+
+Two real, zero-downside-to-the-feature wastes did exist in `next.config.ts`'s
+`images` block, both left at Next's defaults:
+
+- **`deviceSizes` included 2048 and 3840.** Every image in the app is fetched
+  from TMDB pre-sized at `w185`–`w1280` (`posterUrl`/`backdropUrl`,
+  `lib/tmdb/client.ts`) — nothing is ever wider than 1280px. Generating a
+  2048px or 3840px variant of a 1280px source is a pure-upscale transformation:
+  it gets counted and cached, and it can never look sharper than the original.
+  The title page's full-bleed backdrop (`sizes="100vw"`) was the one place this
+  actually fired, since it's the only `fill` image wide enough to request the
+  top buckets. Fixed: `deviceSizes: [640, 750, 828, 1080, 1200, 1920]`.
+- **`minimumCacheTTL` defaulted to 4 hours.** A TMDB image path is immutable —
+  the same URL never points at different pixels — so there's no correctness
+  reason to ever let a cached transformation expire and force a re-transform
+  (which re-spends a transformation credit for pixels already optimized once).
+  4h is tuned for content that changes; TMDB posters don't. Fixed:
+  `minimumCacheTTL: 31536000` (1 year).
+
+Landing page's `TitleShowcase`/`PhoneMockup` marquee (real TMDB posters, added
+2026-08-03) also had a stale header comment claiming "zero fetches" — corrected
+in `(marketing)/page.tsx`, since that route is the highest-traffic page in the
+app and now genuinely spends part of this budget every 6h revalidate.
+
+**Not done, and deliberately not the first move:** the P3 bullet below about
+`unoptimized` posters. Config tuning captures the free win without touching a
+single visual or feature; only reach for `unoptimized` if usage keeps climbing
+after this — see Instrument before optimizing at the bottom of this doc.
+
+---
+
 ## Migrations applied — 2026-08-01
 
 All four 2026-07-31 migrations are **applied and their TypeScript is rewired**.
@@ -364,10 +409,14 @@ single-column FK — it's what allowed the collision.
   becomes a problem, consider 1 page plus an explicit "load more" — but this is
   a deliberate feature choice, so only revisit if it actually shows up in
   metrics. See the rule at the top.
-- **`next/image` optimization** counts against Vercel's transform quota. TMDB
-  already serves pre-sized posters (`w185`/`w342`/`w500`), so `unoptimized`
-  on poster images is worth *measuring* — it may cut transform usage for no
-  visual loss.
+- **`unoptimized` on poster images**, to skip Vercel's optimizer entirely since
+  TMDB already serves pre-sized posters. Downgraded from "worth measuring" to
+  "actually still open" by #12 above, once the quota alert made it worth
+  measuring for real — the config-level fixes there (capped `deviceSizes`, a
+  1-year `minimumCacheTTL`) were the free win and came first. Revisit
+  `unoptimized` only if usage climbs again after those land; it costs the
+  automatic AVIF/WebP conversion and responsive srcset, which `deviceSizes`
+  tuning doesn't.
 - **`ensureSeasonCached` on every title-page render** is idempotent and
   short-circuits on a cache hit, but it still costs 2 Supabase queries per
   view. Low value; listed for completeness.

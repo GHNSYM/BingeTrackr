@@ -329,6 +329,16 @@ export type DiscoverParams = {
    * "already out".
    */
   dateTo?: string;
+  /**
+   * TMDB keyword ids (`with_keywords`) — added for Discover's "Mood" rows
+   * (`DESIGN_ROADMAP.md`'s Phase 2), which have no genre-only equivalent:
+   * mood is expressed as a genre + keyword combo, not a filter TMDB exposes
+   * directly. Resolve a keyword string to its id via `/search/keyword` and
+   * verify the combo actually returns real, non-obscure results before
+   * shipping it — same rule as every other id in this file. See
+   * `MOOD_AXES` in `lib/discover/axes.ts` for the verified combos in use.
+   */
+  keywords?: (number | string)[];
 };
 
 const SORT_KEYS: Record<DiscoverSort, Record<TmdbMediaType, string>> = {
@@ -360,6 +370,7 @@ function discoverQuery(
     with_original_language: join(p.originalLanguages),
     with_watch_providers: join(p.watchProviders),
     watch_region: p.watchProviders?.length ? p.watchRegion : undefined,
+    with_keywords: join(p.keywords),
     "vote_count.gte": p.minVotes,
     [`${dateKey}.gte`]: p.yearFrom ? `${p.yearFrom}-01-01` : undefined,
     [`${dateKey}.lte`]:

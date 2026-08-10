@@ -315,6 +315,86 @@ export function browseHeading(
   return heading;
 }
 
+// ─── Mood (Phase 2) ─────────────────────────────────────────────────────────
+
+/**
+ * Mood → genre + keyword combo. `DESIGN_ROADMAP.md`'s Phase 2: "No TMDB
+ * concept either. Best mapping is mood → genre + keyword combos via
+ * `with_keywords`... then it rides the Phase 1 fetcher." That's the whole
+ * mechanism — unlike Franchises/Must-watches (Phase 2's other two editorial
+ * rows), Mood needs no curated list or admin-owned account: it's config over
+ * the same `discoverTitles`/`BrowseSection` every Phase 1 axis already uses,
+ * with a `keywords` filter added alongside `genres`.
+ *
+ * Every id below (genre ids are TMDB's stable movie set; keyword ids were
+ * looked up via `/search/keyword`) was verified live against
+ * `/discover/movie` on 2026-08-11 before being hardcoded — same discipline as
+ * `LANGUAGE_RATING_FLOOR` above, for the same reason: a wrong keyword id
+ * doesn't error, it just returns an empty or wrong-feeling row.
+ *
+ * The vote floor is chosen per row, not copied from `RATING_FLOOR`, because
+ * these sort by *popularity* (mood is a browse feeling, not a quality
+ * ranking) over an already-narrow genre+keyword population — measured
+ * directly against each combo:
+ * - Feel-good (35,10751 + feelgood 275276): 20 results at floor 20 —
+ *   Forrest Gump, The Intouchables, Green Book.
+ * - Edge of your seat (53 + suspense 288394): popularity-sorted results were
+ *   noisy below floor 300 (a 32-vote title outranking everything); 300 gives
+ *   10 clean results — Perfect Blue, Battle Royale, Devil.
+ * - Bring tissues (18 + tearjerker 156924): 23 results at floor 20 —
+ *   The Pianist, We Live in Time.
+ */
+export type MoodAxis = {
+  key: string;
+  label: string;
+  /**
+   * Movies only, deliberately. Genre ids are a different set per type — the
+   * combos above were only verified for movie genre ids (`with_genres=35`
+   * is Comedy for a film, but TV's Comedy is also 35 while TV's Drama is 18
+   * too, so it *might* coincidentally work — untested, so not claimed). Add
+   * a TV set only after repeating the same live verification this file's own
+   * rule requires.
+   */
+  type: TmdbMediaType;
+  params: DiscoverParams;
+};
+
+export const MOOD_AXES: MoodAxis[] = [
+  {
+    key: "feel-good",
+    label: "Feel-good",
+    type: "movie",
+    params: {
+      sort: "popular",
+      genres: [35, 10751],
+      keywords: [275276],
+      minVotes: 20,
+    },
+  },
+  {
+    key: "edge-of-seat",
+    label: "Edge of your seat",
+    type: "movie",
+    params: {
+      sort: "popular",
+      genres: [53],
+      keywords: [288394],
+      minVotes: 300,
+    },
+  },
+  {
+    key: "bring-tissues",
+    label: "Bring tissues",
+    type: "movie",
+    params: {
+      sort: "popular",
+      genres: [18],
+      keywords: [156924],
+      minVotes: 20,
+    },
+  },
+];
+
 // ─── Landing-page rails ────────────────────────────────────────────────────
 
 export type RailConfig = {

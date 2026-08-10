@@ -17,11 +17,20 @@ import { discoverTitles, getTv, posterUrl } from "@/lib/tmdb/client";
  *
  * Structural notes:
  *
- * **Static, zero fetches.** No TMDB call, no Supabase read, no `cookies()`. `/`
- * stays the one prerendered route in the build, which matters because it's what
- * gets shared, crawled and cold-opened. Poster art is the handoff's gradient
- * tile — its specified fallback state — so the showcase costs no requests and
- * cannot break when TMDB or an API key is unavailable.
+ * **Static, no Supabase read, no `cookies()` — but NOT zero TMDB fetches.**
+ * `/` stays the one prerendered route in the build (`○`, ISR-revalidated every
+ * 6h via `discoverTitles`'s own cache window — see `loadShowcase` below), which
+ * matters because it's what gets shared, crawled and cold-opened. It used to be
+ * genuinely zero-fetch with gradient-tile poster art; that changed when real
+ * TMDB posters replaced the placeholders (see `TitleShowcase`/`PhoneMockup`),
+ * on purpose, so don't "fix" this comment back without also reverting that.
+ * The tradeoff is real and deliberate — a handful of TMDB calls every 6h on the
+ * highest-traffic route, in exchange for actual poster art instead of letter
+ * tiles — and it's why `next.config.ts`'s `images.deviceSizes`/
+ * `minimumCacheTTL` are tuned: Vercel's free-tier Image Optimization budget is
+ * shared across the whole app, and this route touches it too now. A missing
+ * `TMDB_API_KEY` or a TMDB outage still can't break the page — `loadShowcase`
+ * catches and omits the section rather than failing the build/render.
  *
  * **Colour is allowed here.** The monochrome-chrome rule in `AGENTS.md` governs
  * the *app*; this is a marketing surface. Every hue comes from `--grad-*` /

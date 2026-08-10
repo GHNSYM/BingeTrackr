@@ -11,6 +11,7 @@ import {
   type TmdbMediaType,
 } from "@/lib/tmdb/client";
 import { BrowseSection } from "@/components/trackr/BrowseSection";
+import { EditorialSection } from "@/components/trackr/EditorialSection";
 import {
   PosterSectionSkeleton,
   RailSectionSkeleton,
@@ -25,7 +26,9 @@ import {
   DISCOVER_RAILS,
   IN_WATCH_PROVIDERS,
   languagesForType,
+  MOOD_AXES,
 } from "@/lib/discover/axes";
+import { getFranchiseRows, getMustWatchRows } from "@/lib/discover/editorial";
 import {
   getQuickTrackStates,
   type QuickTrackState,
@@ -215,6 +218,35 @@ function LandingSections({ typeFilter }: { typeFilter: TypeFilter }) {
         <TrendingSections typeFilter={typeFilter} />
       </Suspense>
 
+      {/*
+        Phase 2's editorial rows — see DESIGN_ROADMAP.md. Placed right after
+        the Trending anchor and ahead of the mechanical Phase 1 axes below:
+        these are hand-picked, and a curated row earns a more prominent slot
+        than a "browse by decade" chip. Movie-only (typeFilter === "tv" hides
+        them) — Must-watches mixes in two TV picks regardless, since it's one
+        deliberately cross-media list, not a per-type axis.
+      */}
+      {typeFilter !== "tv" && (
+        <>
+          <Suspense fallback={<RailSectionSkeleton count={6} labelWidth={120} />}>
+            <FranchiseSections />
+          </Suspense>
+          <Suspense fallback={<RailSectionSkeleton count={8} labelWidth={140} />}>
+            <MustWatchSection />
+          </Suspense>
+          {MOOD_AXES.map((mood) => (
+            <Suspense
+              key={mood.key}
+              fallback={
+                <RailSectionSkeleton count={8} labelWidth={mood.label.length * 7} />
+              }
+            >
+              <BrowseSection label={mood.label} type={mood.type} params={mood.params} limit={RAIL_LIMIT} />
+            </Suspense>
+          ))}
+        </>
+      )}
+
       <Suspense fallback={<BrowseChipsSkeleton />}>
         <BrowseChips typeFilter={typeFilter} />
       </Suspense>
@@ -270,6 +302,18 @@ async function TrendingSections({ typeFilter }: { typeFilter: TypeFilter }) {
       )}
     </div>
   );
+}
+
+// ─── Editorial (Phase 2) ────────────────────────────────────────────────────
+
+async function FranchiseSections() {
+  const rows = await getFranchiseRows();
+  return <EditorialSection rows={rows} />;
+}
+
+async function MustWatchSection() {
+  const rows = await getMustWatchRows();
+  return <EditorialSection rows={rows} />;
 }
 
 // ─── Browse-by chips ───────────────────────────────────────────────────────

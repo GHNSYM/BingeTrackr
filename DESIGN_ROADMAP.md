@@ -225,31 +225,55 @@ limit, not a product call — widen it if coverage improves.
    `display_priorities.IN: 0`, so it's from the data rather than a favourite. The
    other seven services are chips.
 
-### Phase 2 — needs real work
+### Phase 2 — Franchises, Must-watches, Mood shipped 2026-08-11; People deferred
 
-**Franchises / universes.** You asked for this specifically, so the constraint
-matters: **TMDB has no endpoint to browse or list collections.** You can fetch
-one by id (`/collection/{id}`, already wired up for title-page recommendations)
-or hit `/search/collection`. There is no "all franchises" feed. So a browse-by-
-franchise page needs **a curated list of collection ids stored on our side**.
-Not hard — but it's editorial content, not an API integration, and it should be
-scoped as such.
+The content-model question this section used to flag as blocking got
+confirmed by building against it, not just reasoning about it: **`custom_lists`
++ `custom_list_items` really did power Franchises and Must-watches with zero
+new schema.** Verified end-to-end — seeded via the service-role key, read back
+through the **anon** client (the actual RLS path a real Discover request
+takes), rendered on the live page, checked with a throwaway test account.
 
-**People — directors & actors.** `/search/person`, then
-`/person/{id}/combined_credits`. Straightforward, but it implies a new
-`/person/[id]` page, which is a surface that doesn't exist yet. Medium effort.
+**What shipped, and how:**
 
-**Must-watches.** No TMDB endpoint. Pure editorial.
+- **Franchises.** `TMDB has no endpoint to browse collections` was correct —
+  fixed with **a curated list of collection ids stored on our side**, exactly
+  as scoped. Five franchises seeded (Avengers, Harry Potter, Fast & Furious,
+  John Wick, Bāhubali — a starter set, not a final editorial statement; add
+  more freely). One admin-owned account (`aa1b126c-…`, handle `bingetrackr`,
+  never signed into — every write goes through the service-role key) owns a
+  `custom_lists` row per franchise, `is_public = true`. Grouped by a
+  `franchise-` slug prefix rather than a new `category` column — the whole
+  point was zero new schema, and a naming convention gets the same grouping
+  for free.
+- **Must-watches.** Pure editorial, as scoped — one list, 8 hand-picked
+  titles spanning Hollywood/Hindi/Telugu/Korean/Japanese/TV, under the same
+  account (`must-watch-picks`).
+- **Mood — turned out to be a DIFFERENT mechanism than the other two**, and
+  this section's own blockquote undersold that: mood is a genre+keyword combo
+  riding `discoverTitles`/`BrowseSection` unchanged (`MOOD_AXES` in
+  `lib/discover/axes.ts`), not a custom_lists read at all. No editorial
+  account, no seed script, no admin content for Mood — just three verified
+  `with_genres` + `with_keywords` combos (Feel-good, Edge of your seat, Bring
+  tissues). `with_keywords` didn't exist on `DiscoverParams` before this;
+  added alongside the existing genre/language/provider params, same pattern.
+- **People — still not built, deliberately.** Unlike the other three, it
+  needs a genuinely new surface (`/person/[id]`), not just a new Discover row
+  — a materially bigger, separate piece of work, not a config addition. Left
+  for its own pass.
 
-**Mood.** No TMDB concept either. Best mapping is mood → genre + keyword
-combos via `with_keywords` (`/search/keyword` to find ids). Editorial mapping
-table, then it rides the Phase 1 fetcher.
+Query layer: `lib/discover/editorial.ts` (`getFranchiseRows`/
+`getMustWatchRows`, reading the editorial account's public lists) and
+`EditorialSection.tsx` (renders each list as its own rail via the existing
+`TrackablePosterGrid` — not `BrowseSection`, which is TMDB-fetch-shaped and
+wrong for data the caller already has). Content is managed via
+**`scripts/seed-editorial-lists.mjs`** — a standalone, idempotent, re-runnable
+script (not an admin UI; editorial curation for a solo dev is a data-seeding
+job, not a CMS). Edit the arrays at the top and re-run to add a franchise, add
+a must-watch, or refresh posters.
 
-> **The editorial three (franchises, must-watches, mood) need a content model —
-> and we already have one.** `custom_lists` + `custom_list_items` exist, with
-> `is_public` and RLS that lets anyone read public lists. An admin-owned account
-> publishing curated public lists powers all three rows with **zero new
-> schema**. Worth confirming before designing anything bespoke.
+Landing slot: right after the Trending anchor, ahead of the mechanical Phase 1
+axes — curated content earns a more prominent slot than a decade chip.
 
 ### Phase 3 — anime
 
@@ -280,13 +304,13 @@ same component.
    `/discover/browse` grid with URL-driven facets and pagination.
 4. ~~Home's single trending rail.~~ **Done** — shipped as the hero carousel
    instead (see Home Phase 2).
-5. **← next.** Discover Phase 2 — decide the editorial content model first
-   (probably `custom_lists`), then franchises → people → must-watch → mood.
-
-Phase 2 has one thing worth settling before any of it: whether an admin-owned
-account publishing public `custom_lists` really can back franchises, must-watches
-and mood with zero new schema. Confirm that first; it decides the shape of three
-rows at once.
+5. ~~Discover Phase 2 — Franchises, Must-watches, Mood.~~ **Done 2026-08-11.**
+   The content-model question is resolved (see the section above) —
+   `custom_lists` really does work for two of the three, Mood turned out to
+   ride the existing fetcher instead.
+6. **← next.** Discover Phase 2's fourth row, People (directors & actors) —
+   scoped separately because it needs a new `/person/[id]` page, not just a
+   new Discover row config.
 
 ## Cost notes
 
